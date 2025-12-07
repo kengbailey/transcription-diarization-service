@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # Speaker Diarization API
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+      target: default  # Use 'cpu-base' for CPU-only build
+    container_name: speaker-diarization-api
+    ports:
+      - "8000:8000"
+    environment:
+      # Hugging Face token (required for first model download)
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      
+      # Model settings
+      - DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
+      - EMBEDDING_MODEL=pyannote/wespeaker-voxceleb-resnet34-LM
+      - MODEL_CACHE_DIR=/app/models
+      
+      # Qdrant connection
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - COLLECTION_NAME=speaker_embeddings
+      
+      # Processing settings
+      - DEVICE=auto  # auto, cuda, or cpu
+      - SIMILARITY_THRESHOLD=0.7
+      
+      # API settings
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      # Persist downloaded models
+      - ./data/models:/app/models
+      # Temporary uploads
+      - ./data/uploads:/app/uploads
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # Allow time for model loading
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: speaker-diarization-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__LOG_LEVEL=INFO
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:6333/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  models:
+  uploads:
+  qdrant:
+
+networks:
+  default:
+    name: speaker-diarization-network

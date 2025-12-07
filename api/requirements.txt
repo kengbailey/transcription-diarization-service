@@ -1,0 +1,32 @@
+# Core ML dependencies
+torch>=2.0.0,<2.5
+torchaudio>=2.0.0,<2.5
+
+# Pin huggingface-hub to version compatible with pyannote 3.x
+huggingface-hub<0.24.0
+
+# Pyannote speaker diarization (3.1.x works without torchcodec on ARM)
+pyannote.audio>=3.1.0,<3.4
+
+# FastAPI and server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+
+# Qdrant vector database client
+qdrant-client>=1.7.0
+
+# Pydantic for settings and models
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Audio processing
+scipy>=1.10.0
+numpy>=1.24.0
+matplotlib>=3.5.0
+
+# HTTP client for Whisper API
+httpx>=0.25.0
+
+# Utilities
+python-dotenv>=1.0.0
