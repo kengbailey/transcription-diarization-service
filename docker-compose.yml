@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  # Web UI (React + Nginx)
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: speaker-diarization-ui
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
   # Speaker Diarization API
   api:
     build:
