@@ -13,6 +13,7 @@ services:
 
   # Speaker Diarization API
   api:
+    platform: linux/amd64  # Force x86_64 for PyTorch/CUDA compatibility
     build:
       context: ./api
       dockerfile: Dockerfile

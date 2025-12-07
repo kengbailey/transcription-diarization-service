@@ -1,12 +1,12 @@
-# Core ML dependencies
-torch>=2.0.0,<2.5
-torchaudio>=2.0.0,<2.5
+# Core ML dependencies (pinned to match pyannote-audio 4.0.2 requirements)
+torch==2.8.0
+torchaudio==2.8.0
 
 # Huggingface hub (may need adjustment with pyannote 4.x)
 huggingface-hub
 
-# Pyannote speaker diarization (4.x required for community-1 model with PLDA)
-pyannote.audio>=4.0.0
+# Pyannote speaker diarization (4.0.2 required for community-1 model with PLDA)
+pyannote.audio==4.0.2
 
 # FastAPI and server
 fastapi>=0.100.0
