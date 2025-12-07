@@ -2,11 +2,11 @@
 torch>=2.0.0,<2.5
 torchaudio>=2.0.0,<2.5
 
-# Pin huggingface-hub to version compatible with pyannote 3.x
-huggingface-hub<0.24.0
+# Huggingface hub (may need adjustment with pyannote 4.x)
+huggingface-hub
 
-# Pyannote speaker diarization (pin to 3.1.x for compatibility with community-1 model)
-pyannote.audio>=3.1.0,<3.2
+# Pyannote speaker diarization (4.x required for community-1 model with PLDA)
+pyannote.audio>=4.0.0
 
 # FastAPI and server
 fastapi>=0.100.0
@@ -22,7 +22,7 @@ pydantic-settings>=2.0.0
 
 # Audio processing
 scipy>=1.10.0
-numpy>=1.24.0,<2.0
+numpy>=2.0.0
 matplotlib>=3.5.0
 
 # HTTP client for Whisper API
