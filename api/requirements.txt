@@ -22,7 +22,7 @@ pydantic-settings>=2.0.0
 
 # Audio processing
 scipy>=1.10.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0
 matplotlib>=3.5.0
 
 # HTTP client for Whisper API
