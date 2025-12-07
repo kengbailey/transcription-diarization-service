@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Web UI (React + Nginx)
   ui:
@@ -12,11 +10,6 @@ services:
     depends_on:
       - api
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
 
   # Speaker Diarization API
   api:
@@ -53,8 +46,7 @@ services:
       # Temporary uploads
       - ./data/uploads:/app/uploads
     depends_on:
-      qdrant:
-        condition: service_healthy
+      - qdrant
     deploy:
       resources:
         reservations:
@@ -63,12 +55,6 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s  # Allow time for model loading
 
   # Qdrant Vector Database
   qdrant:
@@ -84,12 +70,6 @@ services:
     volumes:
       - ./data/qdrant:/qdrant/storage
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:6333/"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
 
 volumes:
   models:
