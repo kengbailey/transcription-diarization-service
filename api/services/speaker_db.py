@@ -479,9 +479,151 @@ class SpeakerDBService:
         
         return True
     
+    def get_speaker_samples(self, speaker_id: str) -> list[dict]:
+        """Get all samples (embeddings) for a speaker.
+
+        Args:
+            speaker_id: Speaker ID to look up
+
+        Returns:
+            List of sample info dictionaries with point IDs
+        """
+        if not self._initialized:
+            self.initialize()
+
+        samples = []
+        offset = None
+
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=self.settings.collection_name,
+                scroll_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="speaker_id",
+                            match=qdrant_models.MatchValue(value=speaker_id)
+                        )
+                    ]
+                ),
+                limit=100,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False
+            )
+
+            for point in results:
+                samples.append({
+                    "sample_id": str(point.id),
+                    "audio_source": point.payload.get("audio_source", "unknown"),
+                    "created_at": point.payload.get("created_at")
+                })
+
+            if offset is None:
+                break
+
+        return samples
+
+    def delete_speaker_sample(self, speaker_id: str, sample_id: str) -> bool:
+        """Delete a specific sample (embedding) from a speaker.
+
+        Args:
+            speaker_id: Speaker ID that owns the sample
+            sample_id: Point ID of the sample to delete
+
+        Returns:
+            True if deleted, False if not found or doesn't belong to speaker
+        """
+        if not self._initialized:
+            self.initialize()
+
+        # Verify the sample belongs to this speaker
+        try:
+            points = self.client.retrieve(
+                collection_name=self.settings.collection_name,
+                ids=[sample_id],
+                with_payload=True
+            )
+
+            if not points:
+                return False
+
+            point = points[0]
+            if point.payload.get("speaker_id") != speaker_id:
+                return False
+
+            # Delete the point
+            self.client.delete(
+                collection_name=self.settings.collection_name,
+                points_selector=qdrant_models.PointIdsList(
+                    points=[sample_id]
+                )
+            )
+
+            logger.info(f"Deleted sample {sample_id} from speaker {speaker_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete sample: {e}")
+            return False
+
+    def update_speaker_name(self, speaker_id: str, new_name: str) -> bool:
+        """Update the name of a speaker.
+
+        Args:
+            speaker_id: Speaker ID to update
+            new_name: New name for the speaker
+
+        Returns:
+            True if updated, False if speaker not found
+        """
+        if not self._initialized:
+            self.initialize()
+
+        # Check if speaker exists
+        speaker = self.get_speaker_by_id(speaker_id)
+        if not speaker:
+            return False
+
+        # Get all point IDs for this speaker
+        point_ids = []
+        offset = None
+
+        while True:
+            results, offset = self.client.scroll(
+                collection_name=self.settings.collection_name,
+                scroll_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="speaker_id",
+                            match=qdrant_models.MatchValue(value=speaker_id)
+                        )
+                    ]
+                ),
+                limit=100,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False
+            )
+
+            for point in results:
+                point_ids.append(point.id)
+
+            if offset is None:
+                break
+
+        # Update payload for all points
+        self.client.set_payload(
+            collection_name=self.settings.collection_name,
+            payload={"speaker_name": new_name},
+            points=point_ids
+        )
+
+        logger.info(f"Updated speaker name from '{speaker['speaker_name']}' to '{new_name}' (id: {speaker_id})")
+        return True
+
     def get_collection_stats(self) -> dict:
         """Get statistics about the speaker embeddings collection.
-        
+
         Returns:
             Dictionary with collection statistics
         """

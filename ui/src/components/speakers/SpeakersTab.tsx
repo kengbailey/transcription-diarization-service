@@ -1,12 +1,12 @@
 import * as React from "react"
-import { Plus, Users, Trash2, AudioLines, Calendar } from "lucide-react"
+import { Plus, Users, Trash2, AudioLines, Calendar, Pencil, ListMusic } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Input, Label } from "@/components/ui/input"
 import { FileUpload } from "@/components/ui/file-upload"
 import { Spinner } from "@/components/ui/spinner"
-import { getSpeakers, registerSpeaker, addSpeakerSample, deleteSpeaker, type Speaker } from "@/lib/api"
+import { getSpeakers, registerSpeaker, addSpeakerSample, deleteSpeaker, updateSpeakerName, getSpeakerSamples, deleteSpeakerSample, type Speaker, type SpeakerSample } from "@/lib/api"
 import { getSpeakerColor } from "@/lib/utils"
 
 export function SpeakersTab() {
@@ -30,6 +30,19 @@ export function SpeakersTab() {
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
   const [speakerToDelete, setSpeakerToDelete] = React.useState<Speaker | null>(null)
   const [deleteLoading, setDeleteLoading] = React.useState(false)
+
+  // Edit speaker name dialog
+  const [editDialogOpen, setEditDialogOpen] = React.useState(false)
+  const [speakerToEdit, setSpeakerToEdit] = React.useState<Speaker | null>(null)
+  const [editedName, setEditedName] = React.useState("")
+  const [editLoading, setEditLoading] = React.useState(false)
+
+  // Manage samples dialog
+  const [samplesDialogOpen, setSamplesDialogOpen] = React.useState(false)
+  const [speakerForSamples, setSpeakerForSamples] = React.useState<Speaker | null>(null)
+  const [samples, setSamples] = React.useState<SpeakerSample[]>([])
+  const [samplesLoading, setSamplesLoading] = React.useState(false)
+  const [deletingSampleId, setDeletingSampleId] = React.useState<string | null>(null)
 
   const loadSpeakers = React.useCallback(async () => {
     try {
@@ -106,6 +119,62 @@ export function SpeakersTab() {
   const openDeleteDialog = (speaker: Speaker) => {
     setSpeakerToDelete(speaker)
     setDeleteDialogOpen(true)
+  }
+
+  const openEditDialog = (speaker: Speaker) => {
+    setSpeakerToEdit(speaker)
+    setEditedName(speaker.speaker_name)
+    setEditDialogOpen(true)
+  }
+
+  const handleEditSpeaker = async () => {
+    if (!speakerToEdit || !editedName.trim()) return
+
+    try {
+      setEditLoading(true)
+      await updateSpeakerName(speakerToEdit.speaker_id, editedName.trim())
+      setEditDialogOpen(false)
+      setSpeakerToEdit(null)
+      setEditedName("")
+      loadSpeakers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update speaker name")
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  const openSamplesDialog = async (speaker: Speaker) => {
+    setSpeakerForSamples(speaker)
+    setSamplesDialogOpen(true)
+    setSamplesLoading(true)
+
+    try {
+      const response = await getSpeakerSamples(speaker.speaker_id)
+      setSamples(response.samples)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load samples")
+      setSamplesDialogOpen(false)
+    } finally {
+      setSamplesLoading(false)
+    }
+  }
+
+  const handleDeleteSample = async (sampleId: string) => {
+    if (!speakerForSamples) return
+
+    try {
+      setDeletingSampleId(sampleId)
+      await deleteSpeakerSample(speakerForSamples.speaker_id, sampleId)
+      // Remove from local state
+      setSamples(prev => prev.filter(s => s.sample_id !== sampleId))
+      // Reload speakers to update count
+      loadSpeakers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete sample")
+    } finally {
+      setDeletingSampleId(null)
+    }
   }
 
   const formatDate = (dateString: string) => {
@@ -186,27 +255,43 @@ export function SpeakersTab() {
                         </p>
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => openDeleteDialog(speaker)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-primary"
+                        onClick={() => openEditDialog(speaker)}
+                        title="Edit name"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => openDeleteDialog(speaker)}
+                        title="Delete speaker"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
-                  
+
                   <div className="space-y-2 text-sm text-muted-foreground mb-4">
-                    <div className="flex items-center gap-2">
+                    <button
+                      className="flex items-center gap-2 hover:text-primary transition-colors cursor-pointer"
+                      onClick={() => openSamplesDialog(speaker)}
+                    >
                       <AudioLines className="w-4 h-4" />
                       <span>{speaker.embeddings_count} voice sample{speaker.embeddings_count !== 1 ? "s" : ""}</span>
-                    </div>
+                      <ListMusic className="w-3 h-3 ml-1" />
+                    </button>
                     <div className="flex items-center gap-2">
                       <Calendar className="w-4 h-4" />
                       <span>Added {formatDate(speaker.created_at)}</span>
                     </div>
                   </div>
-                  
+
                   <Button
                     variant="outline"
                     className="w-full"
@@ -325,7 +410,7 @@ export function SpeakersTab() {
               Are you sure you want to delete {speakerToDelete?.speaker_name}? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
@@ -341,6 +426,121 @@ export function SpeakersTab() {
             >
               {deleteLoading && <Spinner size="sm" className="mr-2" />}
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Speaker Name Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent onClose={() => setEditDialogOpen(false)}>
+          <DialogHeader>
+            <DialogTitle>Edit Speaker Name</DialogTitle>
+            <DialogDescription>
+              Update the name for this speaker.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-speaker-name">Speaker Name</Label>
+              <Input
+                id="edit-speaker-name"
+                placeholder="e.g., John Doe"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                disabled={editLoading}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditDialogOpen(false)}
+              disabled={editLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditSpeaker}
+              disabled={!editedName.trim() || editedName === speakerToEdit?.speaker_name || editLoading}
+            >
+              {editLoading && <Spinner size="sm" className="mr-2" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manage Samples Dialog */}
+      <Dialog open={samplesDialogOpen} onOpenChange={setSamplesDialogOpen}>
+        <DialogContent onClose={() => setSamplesDialogOpen(false)} className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Voice Samples</DialogTitle>
+            <DialogDescription>
+              Manage voice samples for {speakerForSamples?.speaker_name}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            {samplesLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Spinner size="lg" />
+              </div>
+            ) : samples.length === 0 ? (
+              <p className="text-center text-muted-foreground py-4">No samples found</p>
+            ) : (
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {samples.map((sample, index) => (
+                  <div
+                    key={sample.sample_id}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-card"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+                        <AudioLines className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          Sample {index + 1}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {sample.audio_source !== "unknown" ? sample.audio_source : formatDate(sample.created_at)}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-muted-foreground hover:text-destructive flex-shrink-0"
+                      onClick={() => handleDeleteSample(sample.sample_id)}
+                      disabled={deletingSampleId === sample.sample_id || samples.length <= 1}
+                      title={samples.length <= 1 ? "Cannot delete the last sample" : "Delete sample"}
+                    >
+                      {deletingSampleId === sample.sample_id ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {samples.length === 1 && (
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                Cannot delete the last sample. Delete the speaker instead.
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSamplesDialogOpen(false)}
+            >
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -22,6 +22,19 @@ export interface RegisterSpeakerResponse {
   message: string
 }
 
+export interface SpeakerSample {
+  sample_id: string
+  audio_source: string
+  created_at: string
+}
+
+export interface SpeakerSamplesResponse {
+  speaker_id: string
+  speaker_name: string
+  samples: SpeakerSample[]
+  total_count: number
+}
+
 export interface TranscriptSegment {
   speaker: string
   identified_as: string | null
@@ -127,6 +140,32 @@ export async function addSpeakerSample(speakerId: string, audioFile: File): Prom
 
 export async function deleteSpeaker(speakerId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/speakers/${speakerId}`, {
+    method: 'DELETE',
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Unknown error' }))
+    throw new ApiError(response.status, error.detail || error.message || 'Delete failed')
+  }
+}
+
+export async function updateSpeakerName(speakerId: string, speakerName: string): Promise<Speaker> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ speaker_name: speakerName }),
+  })
+  return handleResponse(response)
+}
+
+export async function getSpeakerSamples(speakerId: string): Promise<SpeakerSamplesResponse> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}/samples`)
+  return handleResponse(response)
+}
+
+export async function deleteSpeakerSample(speakerId: string, sampleId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}/samples/${sampleId}`, {
     method: 'DELETE',
   })
   if (!response.ok) {

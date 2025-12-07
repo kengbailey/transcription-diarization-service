@@ -101,10 +101,10 @@ class Speaker(BaseModel):
 
 class SpeakerListResponse(BaseModel):
     """Response listing all registered speakers."""
-    
+
     speakers: list[Speaker] = Field(..., description="List of registered speakers")
     total_count: int = Field(..., description="Total number of registered speakers")
-    
+
     class Config:
         json_schema_extra = {
             "example": {
@@ -117,6 +117,61 @@ class SpeakerListResponse(BaseModel):
                     }
                 ],
                 "total_count": 1
+            }
+        }
+
+
+class SpeakerSample(BaseModel):
+    """Information about a speaker's voice sample."""
+
+    sample_id: str = Field(..., description="Unique ID for the sample")
+    audio_source: str = Field(..., description="Original audio source filename")
+    created_at: datetime = Field(..., description="When the sample was created")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "sample_id": "xyz789",
+                "audio_source": "recording.wav",
+                "created_at": "2024-01-15T10:30:00Z"
+            }
+        }
+
+
+class SpeakerSamplesResponse(BaseModel):
+    """Response listing all samples for a speaker."""
+
+    speaker_id: str = Field(..., description="Speaker ID")
+    speaker_name: str = Field(..., description="Speaker name")
+    samples: list[SpeakerSample] = Field(..., description="List of voice samples")
+    total_count: int = Field(..., description="Total number of samples")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "speaker_id": "abc123",
+                "speaker_name": "John Doe",
+                "samples": [
+                    {
+                        "sample_id": "xyz789",
+                        "audio_source": "recording.wav",
+                        "created_at": "2024-01-15T10:30:00Z"
+                    }
+                ],
+                "total_count": 1
+            }
+        }
+
+
+class UpdateSpeakerRequest(BaseModel):
+    """Request to update a speaker's name."""
+
+    speaker_name: str = Field(..., description="New name for the speaker", min_length=1, max_length=100)
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "speaker_name": "Jane Doe"
             }
         }
 

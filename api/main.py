@@ -24,10 +24,13 @@ from api_models import (
     RegisterSpeakerResponse,
     Speaker,
     SpeakerListResponse,
+    SpeakerSample,
+    SpeakerSamplesResponse,
     SpeakerSegment,
     TranscriptSegment,
     TranscriptionResult,
     TranscriptionIdentifiedResult,
+    UpdateSpeakerRequest,
 )
 from services import DiarizationService, EmbeddingService, SpeakerDBService, WhisperService, TranscriptMerger
 
@@ -375,16 +378,99 @@ async def delete_speaker(speaker_id: str):
     """
     try:
         deleted = speaker_db_service.delete_speaker(speaker_id)
-        
+
         if not deleted:
             raise HTTPException(status_code=404, detail="Speaker not found")
-        
+
         return {"message": f"Speaker {speaker_id} deleted successfully"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to delete speaker: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/speakers/{speaker_id}", response_model=Speaker, tags=["Speaker Recognition"])
+async def update_speaker(speaker_id: str, request: UpdateSpeakerRequest):
+    """
+    Update a speaker's name.
+    """
+    try:
+        updated = speaker_db_service.update_speaker_name(speaker_id, request.speaker_name)
+
+        if not updated:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+
+        # Fetch updated speaker info
+        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        return Speaker(**speaker_info)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update speaker: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/speakers/{speaker_id}/samples", response_model=SpeakerSamplesResponse, tags=["Speaker Recognition"])
+async def get_speaker_samples(speaker_id: str):
+    """
+    Get all voice samples for a specific speaker.
+    """
+    try:
+        # Get speaker info
+        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        if not speaker_info:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+
+        # Get samples
+        samples = speaker_db_service.get_speaker_samples(speaker_id)
+
+        return SpeakerSamplesResponse(
+            speaker_id=speaker_id,
+            speaker_name=speaker_info["speaker_name"],
+            samples=[SpeakerSample(**s) for s in samples],
+            total_count=len(samples)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get speaker samples: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/speakers/{speaker_id}/samples/{sample_id}", tags=["Speaker Recognition"])
+async def delete_speaker_sample(speaker_id: str, sample_id: str):
+    """
+    Delete a specific voice sample from a speaker.
+
+    Note: You cannot delete the last sample from a speaker. Delete the speaker instead.
+    """
+    try:
+        # Check speaker exists and has more than one sample
+        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        if not speaker_info:
+            raise HTTPException(status_code=404, detail="Speaker not found")
+
+        if speaker_info["embeddings_count"] <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the last sample. Delete the speaker instead."
+            )
+
+        deleted = speaker_db_service.delete_speaker_sample(speaker_id, sample_id)
+
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Sample not found")
+
+        return {"message": f"Sample {sample_id} deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete sample: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
