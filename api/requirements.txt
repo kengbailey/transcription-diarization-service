@@ -5,8 +5,8 @@ torchaudio>=2.0.0,<2.5
 # Pin huggingface-hub to version compatible with pyannote 3.x
 huggingface-hub<0.24.0
 
-# Pyannote speaker diarization (3.1.x works without torchcodec on ARM)
-pyannote.audio>=3.1.0,<3.4
+# Pyannote speaker diarization (pin to 3.1.x for compatibility with community-1 model)
+pyannote.audio>=3.1.0,<3.2
 
 # FastAPI and server
 fastapi>=0.100.0
