@@ -1,6 +1,7 @@
 # Core ML dependencies (pinned to match pyannote-audio 4.0.2 requirements)
 torch==2.8.0
 torchaudio==2.8.0
+torchcodec>=0.4.0  # Required by pyannote.audio 4.x for audio decoding
 
 # Huggingface hub (may need adjustment with pyannote 4.x)
 huggingface-hub

@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Optional
 
 import torch
+from torch.serialization import add_safe_globals
 import torchaudio
 from pyannote.audio import Pipeline
 from pyannote.audio.pipelines.utils.hook import ProgressHook
+from pyannote.audio.core.task import Problem, Resolution, Specifications, Task
 
 from config import Settings
 
@@ -49,6 +51,9 @@ class DiarizationService:
         # Set up HuggingFace cache directory and authentication
         os.environ["HF_HOME"] = self.settings.model_cache_dir
         os.environ["TORCH_HOME"] = self.settings.model_cache_dir
+
+        # Torch 2.6+ sets weights_only=True by default; allow pyannote classes needed to unpickle
+        add_safe_globals([Specifications, Problem, Resolution, Task])
         
         # Set HF token via environment variable (works with all HF versions)
         if self.settings.huggingface_token:
@@ -129,20 +134,23 @@ class DiarizationService:
             elif self.settings.max_speakers is not None:
                 kwargs["max_speakers"] = self.settings.max_speakers
         
-        # Run diarization
+        # Run diarization using in-memory audio to bypass torchcodec chunk issues
+        # Pass waveform dict instead of file path to avoid sample count mismatches
+        audio_input = {"waveform": waveform, "sample_rate": sample_rate}
         if use_progress_hook:
             with ProgressHook() as hook:
-                output = self.pipeline(audio_path, hook=hook, **kwargs)
+                output = self.pipeline(audio_input, hook=hook, **kwargs)
         else:
-            output = self.pipeline(audio_path, **kwargs)
+            output = self.pipeline(audio_input, **kwargs)
         
         processing_time = time.time() - start_time
         
-        # Extract segments
+        # Extract segments - pyannote 4.x returns DiarizeOutput, annotation is at .speaker_diarization
         segments = []
         speakers = set()
-        
-        for turn, _, speaker in output.itertracks(yield_label=True):
+        annotation = getattr(output, 'speaker_diarization', output)  # Handle both 4.x and 3.x
+
+        for turn, _, speaker in annotation.itertracks(yield_label=True):
             segments.append({
                 "speaker": speaker,
                 "start": round(turn.start, 3),

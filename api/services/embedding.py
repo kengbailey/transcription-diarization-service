@@ -7,9 +7,11 @@ from typing import Optional
 
 import numpy as np
 import torch
+from torch.serialization import add_safe_globals
 import torchaudio
 from pyannote.audio import Model, Inference
 from pyannote.core import Segment
+from torch.torch_version import TorchVersion
 
 from config import Settings
 
@@ -50,6 +52,9 @@ class EmbeddingService:
         # Set up HuggingFace cache directory and authentication
         os.environ["HF_HOME"] = self.settings.model_cache_dir
         os.environ["TORCH_HOME"] = self.settings.model_cache_dir
+
+        # Torch 2.6+ sets weights_only=True by default; allow torch version class used in checkpoints
+        add_safe_globals([TorchVersion])
         
         # Set HF token via environment variable (works with all HF versions)
         if self.settings.huggingface_token:
@@ -87,22 +92,26 @@ class EmbeddingService:
     
     def extract_embedding(self, audio_path: str) -> np.ndarray:
         """Extract a single embedding from an entire audio file.
-        
+
         Args:
             audio_path: Path to the audio file
-            
+
         Returns:
             Embedding vector as numpy array (shape: 1 x embedding_dim)
         """
         if not self._initialized:
             self.initialize()
-        
+
         logger.info(f"Extracting embedding from: {audio_path}")
-        
-        embedding = self.inference(audio_path)
-        
+
+        # Preload audio with torchaudio to bypass torchcodec chunk issues
+        waveform, sample_rate = torchaudio.load(audio_path)
+        audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+
+        embedding = self.inference(audio_input)
+
         logger.info(f"Embedding extracted, shape: {embedding.shape}")
-        
+
         return embedding
     
     def extract_embedding_from_segment(
@@ -112,24 +121,29 @@ class EmbeddingService:
         end: float
     ) -> np.ndarray:
         """Extract embedding from a specific segment of an audio file.
-        
+
         Args:
             audio_path: Path to the audio file
             start: Start time in seconds
             end: End time in seconds
-            
+
         Returns:
             Embedding vector as numpy array (shape: 1 x embedding_dim)
         """
         if not self._initialized:
             self.initialize()
-        
-        segment = Segment(start, end)
-        
+
         logger.info(f"Extracting embedding from segment [{start:.2f}s - {end:.2f}s]")
-        
-        embedding = self.inference.crop(audio_path, segment)
-        
+
+        # Preload audio and slice to segment to bypass torchcodec chunk issues
+        waveform, sample_rate = torchaudio.load(audio_path)
+        start_sample = int(start * sample_rate)
+        end_sample = int(end * sample_rate)
+        segment_waveform = waveform[:, start_sample:end_sample]
+
+        audio_input = {"waveform": segment_waveform, "sample_rate": sample_rate}
+        embedding = self.inference(audio_input)
+
         return embedding
     
     def extract_sliding_embeddings(
@@ -139,26 +153,30 @@ class EmbeddingService:
         step: float = 1.0
     ) -> tuple[np.ndarray, list[tuple[float, float]]]:
         """Extract embeddings using a sliding window.
-        
+
         Args:
             audio_path: Path to the audio file
             duration: Window duration in seconds
             step: Step size in seconds
-            
+
         Returns:
             Tuple of (embeddings array, list of (start, end) tuples for each embedding)
         """
         if not self._initialized:
             self.initialize()
-        
+
         # Create a new inference with sliding window
         sliding_inference = Inference(self.model, window="sliding", duration=duration, step=step)
         sliding_inference.to(self.device)
-        
+
         logger.info(f"Extracting sliding embeddings (window={duration}s, step={step}s)")
-        
-        embeddings = sliding_inference(audio_path)
-        
+
+        # Preload audio with torchaudio to bypass torchcodec chunk issues
+        waveform, sample_rate = torchaudio.load(audio_path)
+        audio_input = {"waveform": waveform, "sample_rate": sample_rate}
+
+        embeddings = sliding_inference(audio_input)
+
         # Get the time ranges for each embedding
         sliding_window = embeddings.sliding_window
         time_ranges = []
@@ -166,9 +184,9 @@ class EmbeddingService:
             start = i * sliding_window.step
             end = start + sliding_window.duration
             time_ranges.append((start, end))
-        
+
         logger.info(f"Extracted {len(embeddings)} embeddings")
-        
+
         return np.array(embeddings.data), time_ranges
     
     def extract_embeddings_for_segments(

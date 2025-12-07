@@ -2,16 +2,20 @@
 # Supports both GPU (CUDA) and CPU execution
 
 # ==================== GPU BUILD ====================
-# Use NVIDIA CUDA base image for GPU support
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS gpu-base
+# Use NVIDIA CUDA base image for GPU support (12.8 to match PyTorch 2.8.0+cu128)
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 AS gpu-base
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system dependencies
+# Install system dependencies including FFmpeg 6 (required by torchcodec)
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    && add-apt-repository -y ppa:ubuntuhandbook1/ffmpeg6 \
+    && apt-get update && apt-get install -y \
     python3.11 \
     python3.11-venv \
+    python3.11-dev \
     python3-pip \
     ffmpeg \
     git \

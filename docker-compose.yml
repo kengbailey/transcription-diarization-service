@@ -20,7 +20,7 @@ services:
       target: default  # Use 'cpu-base' for CPU-only build
     container_name: speaker-diarization-api
     ports:
-      - "8000:8000"
+      - "8008:8000"
     environment:
       # Hugging Face token (required for first model download)
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
