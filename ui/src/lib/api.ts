@@ -192,21 +192,3 @@ export async function transcribeIdentified(
   return handleResponse(response)
 }
 
-export async function transcribeDiarized(
-  audioFile: File,
-  numSpeakers?: number
-): Promise<TranscriptionResult> {
-  const formData = new FormData()
-  formData.append('file', audioFile)
-  if (numSpeakers !== undefined) {
-    formData.append('num_speakers', numSpeakers.toString())
-  }
-  
-  const response = await fetch(`${API_BASE}/transcribe-diarized`, {
-    method: 'POST',
-    body: formData,
-  })
-  return handleResponse(response)
-}
-
-export { ApiError }
