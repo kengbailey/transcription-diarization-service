@@ -50,7 +50,9 @@ The biggest wins are *deletions*: pyannote 4.x now provides outputs that replace
 5. **Apply the #1963 mitigations** (above) and verify with a long (>1 hr) meeting file while watching `nvidia-smi`.
 6. **Version bumps:** `pyannote.audio` 4.0.2 → **4.0.7** (patch-level, no API break), `torchcodec>=0.7.0` (4.0.7 requires it), Qdrant image → `v1.18.3`, keep `torch==2.8.0` (satisfies pyannote; sm_86 has a long runway — even torch 2.13 supports Ampere). Pin the currently-floating deps (`fastapi`, `qdrant-client`, `numpy`, …) for reproducible builds.
 
-## Phase 2 — Make it a real multi-client LAN service (1–2 weeks)
+## Phase 2 — Make it a real multi-client LAN service (1–2 weeks) — ✅ done 2026-08-03 (commits de69cfb, 5a1148e, 3d80aab)
+
+> All items delivered and verified live: /health answers in 4–8ms during a running transcription (was blocked for the whole job); job queue processes FIFO with queue positions (`POST /jobs/{kind}` → 202 + job id, `GET /jobs/{id}` to poll); 401/413 paths verified in an isolated container; startup sweep removed the January crash orphan; final regression on the shipped images passed (5/5 speakers, 98s for a 16-min meeting). Auth is OFF by default — set API_KEY in .env to enable.
 
 The audit's most important architectural finding: **every endpoint is `async def` but runs blocking GPU inference inline, so one job freezes the entire server** — including `/health` — for its duration (up to the 300s Whisper timeout). For multi-machine LAN use this is the core problem.
 
