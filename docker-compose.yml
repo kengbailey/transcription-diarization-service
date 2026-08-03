@@ -39,11 +39,17 @@ services:
       - DEVICE=auto  # auto, cuda, or cpu
       - SIMILARITY_THRESHOLD=0.7
 
+      # VRAM mitigations for pyannote-audio#1963 (multi-GB transient spike in
+      # the embedding stage on long files)
+      - EMBEDDING_BATCH_SIZE=16
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
       # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
       - PYANNOTE_METRICS_ENABLED=false
 
       # Whisper STT: speaches container running on this host
       - WHISPER_API_URL=http://host.docker.internal:8000/v1
+      - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
 
       # API settings
       - UPLOAD_DIR=/app/uploads
@@ -67,7 +73,7 @@ services:
 
   # Qdrant Vector Database
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.3
     container_name: speaker-diarization-qdrant
     ports:
       - "6333:6333"  # REST API
