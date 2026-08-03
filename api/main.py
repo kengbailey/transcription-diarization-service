@@ -140,6 +140,57 @@ def cleanup_file(filepath: str) -> None:
         logger.warning(f"Failed to cleanup file {filepath}: {e}")
 
 
+def identify_diarized_speakers(
+    filepath: str,
+    diarization_result: dict,
+    similarity_threshold: Optional[float] = None,
+) -> tuple[dict, dict]:
+    """Match each diarized speaker against registered speakers.
+
+    Prefers the per-speaker centroid embeddings the diarization pipeline
+    already computed (no extra GPU pass); falls back to per-segment
+    extraction with voting when a centroid is unavailable.
+
+    Returns:
+        (speaker_mapping, speaker_confidences) keyed by diarized speaker label
+    """
+    centroids = diarization_result.get("speaker_embeddings", {})
+
+    speaker_segments = {}
+    for segment in diarization_result["segments"]:
+        speaker_segments.setdefault(segment["speaker"], []).append(segment)
+
+    speaker_mapping = {}
+    speaker_confidences = {}
+
+    for speaker, segments in speaker_segments.items():
+        if speaker in centroids:
+            match = speaker_db_service.identify_speaker(
+                embedding=centroids[speaker],
+                score_threshold=similarity_threshold,
+            )
+        else:
+            segment_embeddings = embedding_service.extract_embeddings_for_segments(
+                audio_path=filepath,
+                segments=segments,
+                min_duration=0.5,
+            )
+            embeddings = [emb for _, emb in segment_embeddings]
+            match = (
+                speaker_db_service.identify_speaker_by_voting(
+                    embeddings=embeddings,
+                    score_threshold=similarity_threshold,
+                )
+                if embeddings
+                else None
+            )
+
+        speaker_mapping[speaker] = match["speaker_name"] if match else None
+        speaker_confidences[speaker] = match["score"] if match else None
+
+    return speaker_mapping, speaker_confidences
+
+
 # ============== Health Endpoints ==============
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
@@ -513,45 +564,11 @@ async def identify_speakers(
             exclusive=True  # Use exclusive for cleaner speaker identification
         )
         
-        # Group segments by speaker
-        speaker_segments = {}
-        for segment in diarization_result["segments"]:
-            speaker = segment["speaker"]
-            if speaker not in speaker_segments:
-                speaker_segments[speaker] = []
-            speaker_segments[speaker].append(segment)
-        
         # Identify each speaker
-        speaker_mapping = {}
-        speaker_confidences = {}
-        
-        for speaker, segments in speaker_segments.items():
-            # Extract embeddings for this speaker's segments
-            segment_embeddings = embedding_service.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=segments,
-                min_duration=0.5
-            )
-            
-            if segment_embeddings:
-                embeddings = [emb for _, emb in segment_embeddings]
-                
-                # Try to identify using voting
-                match = speaker_db_service.identify_speaker_by_voting(
-                    embeddings=embeddings,
-                    score_threshold=similarity_threshold
-                )
-                
-                if match:
-                    speaker_mapping[speaker] = match["speaker_name"]
-                    speaker_confidences[speaker] = match["score"]
-                else:
-                    speaker_mapping[speaker] = None
-                    speaker_confidences[speaker] = None
-            else:
-                speaker_mapping[speaker] = None
-                speaker_confidences[speaker] = None
-        
+        speaker_mapping, speaker_confidences = identify_diarized_speakers(
+            filepath, diarization_result, similarity_threshold
+        )
+
         # Build result segments
         identified_segments = []
         for segment in diarization_result["segments"]:
@@ -811,40 +828,10 @@ async def transcribe_identified(
         
         # 2. Identify speakers
         logger.info("Identifying speakers...")
-        speaker_segments = {}
-        for segment in diarization_result["segments"]:
-            speaker = segment["speaker"]
-            if speaker not in speaker_segments:
-                speaker_segments[speaker] = []
-            speaker_segments[speaker].append(segment)
-        
-        speaker_mapping = {}
-        speaker_confidences = {}
-        
-        for speaker, segments in speaker_segments.items():
-            segment_embeddings = embedding_service.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=segments,
-                min_duration=0.5
-            )
-            
-            if segment_embeddings:
-                embeddings = [emb for _, emb in segment_embeddings]
-                match = speaker_db_service.identify_speaker_by_voting(
-                    embeddings=embeddings,
-                    score_threshold=similarity_threshold
-                )
-                
-                if match:
-                    speaker_mapping[speaker] = match["speaker_name"]
-                    speaker_confidences[speaker] = match["score"]
-                else:
-                    speaker_mapping[speaker] = None
-                    speaker_confidences[speaker] = None
-            else:
-                speaker_mapping[speaker] = None
-                speaker_confidences[speaker] = None
-        
+        speaker_mapping, speaker_confidences = identify_diarized_speakers(
+            filepath, diarization_result, similarity_threshold
+        )
+
         # 3. Run Whisper transcription
         logger.info("Running Whisper transcription...")
         whisper_result = whisper_service.transcribe_with_words(
