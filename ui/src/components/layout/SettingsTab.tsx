@@ -6,6 +6,10 @@ import { Spinner } from "@/components/ui/spinner"
 import { getHealth, getStats, type HealthResponse, type StatsResponse } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
+// The API is published on host port 8008 (GPU compose). Build links from the
+// hostname the browser actually used, so they work from any LAN machine.
+const API_DIRECT_URL = `http://${window.location.hostname}:8008`
+
 export function SettingsTab() {
   const [health, setHealth] = React.useState<HealthResponse | null>(null)
   const [stats, setStats] = React.useState<StatsResponse | null>(null)
@@ -153,7 +157,7 @@ export function SettingsTab() {
             </div>
             <div className="space-y-1">
               <p className="text-sm text-muted-foreground">API Endpoint</p>
-              <p className="font-medium font-mono text-sm">/api (proxied to localhost:8000)</p>
+              <p className="font-medium font-mono text-sm">/api (proxied) · direct: {API_DIRECT_URL}</p>
             </div>
           </div>
           
@@ -161,7 +165,7 @@ export function SettingsTab() {
             <h4 className="font-medium mb-2">Quick Links</h4>
             <div className="flex flex-wrap gap-2">
               <a
-                href="http://localhost:8000/docs"
+                href={`${API_DIRECT_URL}/docs`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-8 px-3 border border-input bg-transparent shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"
@@ -169,7 +173,7 @@ export function SettingsTab() {
                 API Documentation
               </a>
               <a
-                href="http://localhost:8000/health"
+                href={`${API_DIRECT_URL}/health`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium h-8 px-3 border border-input bg-transparent shadow-sm hover:bg-accent hover:text-accent-foreground transition-colors"

@@ -93,7 +93,12 @@ class ApiError extends Error {
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Unknown error' }))
-    throw new ApiError(response.status, error.detail || error.message || 'Request failed')
+    // FastAPI validation errors put an array of objects in `detail`
+    let message = error.detail || error.message || 'Request failed'
+    if (typeof message !== 'string') {
+      message = JSON.stringify(message)
+    }
+    throw new ApiError(response.status, message)
   }
   return response.json()
 }
@@ -177,17 +182,19 @@ export async function deleteSpeakerSample(speakerId: string, sampleId: string): 
 // Transcription
 export async function transcribeIdentified(
   audioFile: File,
-  numSpeakers?: number
+  numSpeakers?: number,
+  signal?: AbortSignal
 ): Promise<TranscriptionResult> {
   const formData = new FormData()
   formData.append('file', audioFile)
   if (numSpeakers !== undefined) {
     formData.append('num_speakers', numSpeakers.toString())
   }
-  
+
   const response = await fetch(`${API_BASE}/transcribe-identified`, {
     method: 'POST',
     body: formData,
+    signal,
   })
   return handleResponse(response)
 }
