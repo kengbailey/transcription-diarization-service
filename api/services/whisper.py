@@ -1,6 +1,7 @@
-"""Whisper STT service client for OpenAI-compatible API."""
+"""STT service client for OpenAI-compatible ASR APIs (speaches, parakeet.cpp)."""
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -62,13 +63,61 @@ class WhisperService:
             timestamp_granularities = ["word", "segment"]
         
         url = f"{self.settings.whisper_api_url}/audio/transcriptions"
-        
+
         logger.info(f"Transcribing audio: {audio_path}")
-        
+
+        # Some ASR servers (parakeet.cpp) accept only WAV uploads
+        temp_wav = None
+        if self.settings.whisper_send_wav:
+            temp_wav = self._transcode_to_wav(audio_path)
+            send_path = temp_wav
+            content_type = "audio/wav"
+        else:
+            send_path = audio_path
+            content_type = "application/octet-stream"
+
+        try:
+            return self._post_transcription(
+                url, send_path, content_type, language, response_format,
+                timestamp_granularities,
+            )
+        finally:
+            if temp_wav:
+                try:
+                    os.remove(temp_wav)
+                except OSError:
+                    pass
+
+    def _transcode_to_wav(self, audio_path: str) -> str:
+        """Convert audio to 16 kHz mono 16-bit WAV next to the source file."""
+        import torch
+        import torchaudio
+        from scipy.io import wavfile
+
+        logger.info("Transcoding to 16 kHz mono WAV for ASR upload...")
+        waveform, sample_rate = torchaudio.load(audio_path)
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
+        if sample_rate != 16000:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, 16000)
+        pcm = (waveform.squeeze(0).clamp(-1, 1) * 32767).to(torch.int16).numpy()
+        wav_path = f"{audio_path}.16k.wav"
+        wavfile.write(wav_path, 16000, pcm)
+        return wav_path
+
+    def _post_transcription(
+        self,
+        url: str,
+        audio_path: str,
+        content_type: str,
+        language: Optional[str],
+        response_format: str,
+        timestamp_granularities: list[str],
+    ) -> dict:
         # Prepare the multipart form data
         with open(audio_path, "rb") as audio_file:
             files = {
-                "file": (Path(audio_path).name, audio_file, "audio/mpeg")
+                "file": (Path(audio_path).name, audio_file, content_type)
             }
             
             data = {

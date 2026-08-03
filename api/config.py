@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     whisper_model: str = "Systran/faster-whisper-large-v3"
     whisper_language: str | None = None  # None for auto-detect
     whisper_timeout: int = 300  # 5 minutes timeout for long audio
+    # Transcode uploads to 16 kHz mono WAV before sending — required for ASR
+    # servers that only accept WAV (parakeet.cpp)
+    whisper_send_wav: bool = False
     
     class Config:
         env_file = ".env"

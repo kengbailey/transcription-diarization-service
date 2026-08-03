@@ -47,10 +47,16 @@ services:
       # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
       - PYANNOTE_METRICS_ENABLED=false
 
-      # Whisper STT: speaches container running on this host
-      - WHISPER_API_URL=http://host.docker.internal:8000/v1
-      - WHISPER_MODEL=Systran/faster-whisper-large-v3
+      # ASR: parakeet.cpp service below (~360x real-time on the 3090, native
+      # word timestamps). WAV-only, so the api transcodes before upload.
+      - WHISPER_API_URL=http://parakeet:8080/v1
+      - WHISPER_MODEL=tdt-0.6b-v3
+      - WHISPER_SEND_WAV=true
       - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
+      # Whisper alternative (speaches container on the host):
+      # - WHISPER_API_URL=http://host.docker.internal:8000/v1
+      # - WHISPER_MODEL=Systran/faster-whisper-large-v3
+      # - WHISPER_SEND_WAV=false
 
       # API settings
       - UPLOAD_DIR=/app/uploads
@@ -66,6 +72,27 @@ services:
       - ./data/uploads:/app/uploads
     depends_on:
       - qdrant
+      - parakeet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Parakeet ASR (nvidia/parakeet-tdt-0.6b-v3 via parakeet.cpp).
+  # Single-model, one-request-at-a-time — fine, the api serializes GPU work.
+  parakeet:
+    image: ghcr.io/mudler/parakeet.cpp-server:latest-cuda
+    container_name: speaker-diarization-parakeet
+    command: ["--model", "tdt-0.6b-v3"]
+    ports:
+      - "8081:8080"
+    volumes:
+      # Model cache (~1.4 GB gguf, downloaded on first start if absent)
+      - ./data/models/parakeet:/root/.cache/parakeet.cpp
     deploy:
       resources:
         reservations:
