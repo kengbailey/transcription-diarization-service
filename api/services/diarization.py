@@ -14,6 +14,7 @@ from pyannote.audio.pipelines.utils.hook import ProgressHook
 from pyannote.audio.core.task import Problem, Resolution, Specifications, Task
 
 from config import Settings
+from services.cuda_recovery import recover_cuda, is_cuda_error, MAX_RETRIES
 
 
 logger = logging.getLogger(__name__)
@@ -137,11 +138,21 @@ class DiarizationService:
         # Run diarization using in-memory audio to bypass torchcodec chunk issues
         # Pass waveform dict instead of file path to avoid sample count mismatches
         audio_input = {"waveform": waveform, "sample_rate": sample_rate}
-        if use_progress_hook:
-            with ProgressHook() as hook:
-                output = self.pipeline(audio_input, hook=hook, **kwargs)
-        else:
-            output = self.pipeline(audio_input, **kwargs)
+        for _attempt in range(MAX_RETRIES + 1):
+            try:
+                if use_progress_hook:
+                    with ProgressHook() as hook:
+                        output = self.pipeline(audio_input, hook=hook, **kwargs)
+                else:
+                    output = self.pipeline(audio_input, **kwargs)
+                break  # success
+            except Exception as e:
+                if is_cuda_error(e) and _attempt < MAX_RETRIES:
+                    logger.warning(f"CUDA error during diarization (attempt {_attempt + 1}): {e}")
+                    recover_cuda()
+                    self._reinitialize_pipeline()
+                else:
+                    raise
         
         processing_time = time.time() - start_time
         
@@ -289,6 +300,13 @@ class DiarizationService:
         
         return exclusive
     
+    def _reinitialize_pipeline(self) -> None:
+        """Reinitialize the pipeline after a CUDA error."""
+        logger.warning("Reinitializing diarization pipeline after CUDA error...")
+        self._initialized = False
+        self.pipeline = None
+        self.initialize()
+
     def get_device(self) -> str:
         """Get the current device being used."""
         if self.device is not None:

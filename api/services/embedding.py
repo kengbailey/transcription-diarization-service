@@ -14,6 +14,7 @@ from pyannote.core import Segment
 from torch.torch_version import TorchVersion
 
 from config import Settings
+from services.cuda_recovery import recover_cuda, is_cuda_error, MAX_RETRIES
 
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,17 @@ class EmbeddingService:
         waveform, sample_rate = torchaudio.load(audio_path)
         audio_input = {"waveform": waveform, "sample_rate": sample_rate}
 
-        embedding = self.inference(audio_input)
+        for _attempt in range(MAX_RETRIES + 1):
+            try:
+                embedding = self.inference(audio_input)
+                break
+            except Exception as e:
+                if is_cuda_error(e) and _attempt < MAX_RETRIES:
+                    logger.warning(f"CUDA error during embedding extraction (attempt {_attempt + 1}): {e}")
+                    recover_cuda()
+                    self._reinitialize()
+                else:
+                    raise
 
         logger.info(f"Embedding extracted, shape: {embedding.shape}")
 
@@ -142,7 +153,17 @@ class EmbeddingService:
         segment_waveform = waveform[:, start_sample:end_sample]
 
         audio_input = {"waveform": segment_waveform, "sample_rate": sample_rate}
-        embedding = self.inference(audio_input)
+        for _attempt in range(MAX_RETRIES + 1):
+            try:
+                embedding = self.inference(audio_input)
+                break
+            except Exception as e:
+                if is_cuda_error(e) and _attempt < MAX_RETRIES:
+                    logger.warning(f"CUDA error during segment embedding (attempt {_attempt + 1}): {e}")
+                    recover_cuda()
+                    self._reinitialize()
+                else:
+                    raise
 
         return embedding
     
@@ -277,6 +298,14 @@ class EmbeddingService:
         # Convert from [-1, 1] to [0, 1]
         return float((similarity + 1) / 2)
     
+    def _reinitialize(self) -> None:
+        """Reinitialize the embedding model after a CUDA error."""
+        logger.warning("Reinitializing embedding model after CUDA error...")
+        self._initialized = False
+        self.model = None
+        self.inference = None
+        self.initialize()
+
     def get_embedding_dimension(self) -> int:
         """Get the dimension of the embedding vectors."""
         return self.settings.embedding_dimension
