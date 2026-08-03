@@ -35,18 +35,23 @@ Guide for AI coding assistants working on this repository.
 │       └── lib/
 │           ├── api.ts     # API client
 │           └── utils.ts
+├── pipeline/               # Batch meeting-processing scripts (currently deferred; see PLAN.md)
 ├── docker-compose.yml      # GPU deployment
+├── docker-compose.debug.yml # CUDA debug env overrides (opt-in)
 └── docker-compose.cpu.yml  # CPU deployment
 ```
+
+**Current focus (see PLAN.md):** hardening the `api/` service for multi-client LAN use. All compute runs on this host's RTX 3090; former remote-GPU boxes (192.168.8.116/.147) are gone — never point config at them.
 
 ## Tech Stack
 
 ### Backend
 - **FastAPI** - REST API framework
-- **pyannote.audio 4.0** - Speaker diarization (model: `pyannote/speaker-diarization-3.1`)
+- **pyannote.audio 4.0** - Speaker diarization (GPU compose: `pyannote/speaker-diarization-community-1`; CPU compose: `pyannote/speaker-diarization-3.1`)
 - **wespeaker** - Speaker embeddings (model: `pyannote/wespeaker-voxceleb-resnet34-LM`)
 - **Qdrant** - Vector database for speaker embeddings
 - **PyTorch 2.8** - ML framework (CUDA or CPU)
+- **Whisper** - via an external OpenAI-compatible server (speaches container on the host, port 8000; reached from Docker as `host.docker.internal:8000`)
 
 ### Frontend
 - **React 19** + **TypeScript 5**
@@ -166,5 +171,5 @@ docker compose build ui
 
 ### Modifying speaker database logic
 - All Qdrant operations in `api/services/speaker_db.py`
-- Collection: `speaker_embeddings`
+- Collection: `work_speaker_embeddings` (set via `COLLECTION_NAME` in docker-compose.yml; the older `speaker_embeddings` collection still exists on disk with pre-Jan-2026 enrollments)
 - Payload fields: `speaker_id`, `speaker_name`, `created_at`, `audio_source`
