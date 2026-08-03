@@ -46,9 +46,14 @@ services:
       # Processing settings - Force CPU
       - DEVICE=cpu
       - SIMILARITY_THRESHOLD=0.7
-      
+
+      # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
+      - PYANNOTE_METRICS_ENABLED=false
+
       # API settings
       - UPLOAD_DIR=/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Persist downloaded models
       - ./data/models:/app/models

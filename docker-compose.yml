@@ -33,14 +33,22 @@ services:
       # Qdrant connection
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - COLLECTION_NAME=speaker_embeddings
-      
+      - COLLECTION_NAME=work_speaker_embeddings
+
       # Processing settings
       - DEVICE=auto  # auto, cuda, or cpu
       - SIMILARITY_THRESHOLD=0.7
-      
+
+      # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
+      - PYANNOTE_METRICS_ENABLED=false
+
+      # Whisper STT: speaches container running on this host
+      - WHISPER_API_URL=http://host.docker.internal:8000/v1
+
       # API settings
       - UPLOAD_DIR=/app/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Persist downloaded models
       - ./data/models:/app/models

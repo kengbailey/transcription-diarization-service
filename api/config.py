@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     # Speaker recognition settings
     similarity_threshold: float = 0.7  # cosine similarity threshold for speaker matching
     
-    # Whisper STT settings
-    whisper_api_url: str = "http://192.168.8.116:8000/v1"
+    # Whisper STT settings (speaches server on this host; in Docker the
+    # compose file overrides this with host.docker.internal)
+    whisper_api_url: str = "http://localhost:8000/v1"
     whisper_api_key: str = "dummy"
     whisper_model: str = "Systran/faster-distil-whisper-large-v3"
     whisper_language: str | None = None  # None for auto-detect

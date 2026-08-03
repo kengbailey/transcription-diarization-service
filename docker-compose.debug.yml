@@ -1,0 +1,14 @@
+# CUDA debugging overrides — NOT for normal operation.
+#
+# CUDA_LAUNCH_BLOCKING forces synchronous kernel launches so stack traces
+# point at the failing op, at a significant throughput cost.
+# TORCH_USE_CUDA_DSA enables device-side assertions (only effective if torch
+# was built with them; stock PyPI wheels are not).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d
+services:
+  api:
+    environment:
+      - CUDA_LAUNCH_BLOCKING=1
+      - TORCH_USE_CUDA_DSA=1
