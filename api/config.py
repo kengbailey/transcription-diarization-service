@@ -48,7 +48,9 @@ class Settings(BaseSettings):
     # compose file overrides this with host.docker.internal)
     whisper_api_url: str = "http://localhost:8000/v1"
     whisper_api_key: str = "dummy"
-    whisper_model: str = "Systran/faster-distil-whisper-large-v3"
+    # Full large-v3, not distil: distillation degrades the cross-attention
+    # that word timestamps derive from, and distil is English-only
+    whisper_model: str = "Systran/faster-whisper-large-v3"
     whisper_language: str | None = None  # None for auto-detect
     whisper_timeout: int = 300  # 5 minutes timeout for long audio
     

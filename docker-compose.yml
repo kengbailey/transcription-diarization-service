@@ -49,6 +49,7 @@ services:
 
       # Whisper STT: speaches container running on this host
       - WHISPER_API_URL=http://host.docker.internal:8000/v1
+      - WHISPER_MODEL=Systran/faster-whisper-large-v3
       - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
 
       # API settings
