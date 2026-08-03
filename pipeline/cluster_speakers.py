@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from collections import defaultdict
@@ -13,8 +14,10 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-QDRANT_URL = "http://localhost:6333"
-COLLECTION = "speaker_embeddings"
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+# Must match the api's COLLECTION_NAME (docker-compose.yml); the pre-rename
+# collection "speaker_embeddings" still exists on disk with older enrollments.
+COLLECTION = os.environ.get("COLLECTION_NAME", "work_speaker_embeddings")
 MANIFEST_FILE = Path("/home/syran/sandbox/transcription-diarization-service/pipeline/output/manifest.json")
 SIMILARITY_THRESHOLD = 0.55  # Cosine similarity threshold for merging
 
