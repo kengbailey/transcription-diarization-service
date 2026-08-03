@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     device: str = "auto"  # auto, cuda, or cpu
     min_speakers: int | None = None
     max_speakers: int | None = None
+    # community-1 ships embedding_batch_size=32; the final partial batch can
+    # trigger a multi-GB cuDNN workspace VRAM spike on long files
+    # (pyannote-audio#1963). 0 keeps the model default.
+    embedding_batch_size: int = 16
     
     # Speaker recognition settings
     similarity_threshold: float = 0.7  # cosine similarity threshold for speaker matching
