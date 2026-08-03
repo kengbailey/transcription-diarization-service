@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     api_port: int = 8000
     max_upload_size: int = 500 * 1024 * 1024  # 500MB
     upload_dir: str = "/app/uploads"
+    # Shared secret for LAN clients. Empty = auth disabled. When set, every
+    # endpoint except / and /health requires it via "Authorization: Bearer"
+    # or "X-API-Key".
+    api_key: str = ""
     
     # Processing settings
     device: str = "auto"  # auto, cuda, or cpu

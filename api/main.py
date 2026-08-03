@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -11,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -128,10 +127,13 @@ async def lifespan(app: FastAPI):
     job_queue = JobQueue(executor=_execute_job, cleanup=cleanup_file)
     await job_queue.start()
 
+    sweeper = asyncio.create_task(_sweep_uploads_periodically())
+
     yield
 
     # Cleanup
     logger.info("Shutting down speaker diarization API...")
+    sweeper.cancel()
     await job_queue.stop()
 
 
@@ -143,14 +145,54 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware. No allow_credentials: nothing here uses cookies, and
+# combining it with a wildcard origin effectively disables browser CORS
+# protection entirely.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Paths reachable without an API key (when one is configured)
+AUTH_EXEMPT_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    """Require the shared API key on all non-exempt endpoints, if configured."""
+    key = settings.api_key if settings else ""
+    if key and request.method != "OPTIONS" and request.url.path not in AUTH_EXEMPT_PATHS:
+        auth = request.headers.get("authorization", "")
+        provided = request.headers.get("x-api-key") or (
+            auth[7:] if auth.lower().startswith("bearer ") else ""
+        )
+        if provided != key:
+            return JSONResponse(
+                status_code=401,
+                content=ErrorResponse(
+                    error="Unauthorized",
+                    message="Missing or invalid API key",
+                    detail=None,
+                ).model_dump(),
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next):
+    """Tag each request with an ID and log its duration."""
+    request_id = uuid.uuid4().hex[:8]
+    start = time.time()
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    if request.url.path != "/health":
+        logger.info(
+            f"[{request_id}] {request.method} {request.url.path} "
+            f"-> {response.status_code} in {time.time() - start:.2f}s"
+        )
+    return response
 
 
 # Supported audio formats
@@ -171,13 +213,31 @@ def validate_audio_file(file: UploadFile) -> None:
 
 
 async def save_upload_file(file: UploadFile) -> str:
-    """Save uploaded file to temporary directory."""
+    """Save uploaded file to temporary directory, enforcing max_upload_size.
+
+    The size is enforced while streaming (not via Content-Length), so chunked
+    uploads can't bypass it. The API port is exposed directly, so this must
+    not rely on the UI proxy's nginx limit.
+    """
     ext = Path(file.filename).suffix.lower()
     filename = f"{uuid.uuid4()}{ext}"
     filepath = Path(settings.upload_dir) / filename
 
-    with open(filepath, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    size = 0
+    try:
+        with open(filepath, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > settings.max_upload_size:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum upload size of "
+                               f"{settings.max_upload_size:,} bytes"
+                    )
+                f.write(chunk)
+    except HTTPException:
+        cleanup_file(str(filepath))
+        raise
 
     return str(filepath)
 
@@ -189,6 +249,48 @@ def cleanup_file(filepath: str) -> None:
             os.remove(filepath)
     except Exception as e:
         logger.warning(f"Failed to cleanup file {filepath}: {e}")
+
+
+# Uploads older than this are considered orphaned (e.g. left by a crash)
+UPLOAD_MAX_AGE_SECONDS = 6 * 3600
+UPLOAD_SWEEP_INTERVAL_SECONDS = 1800
+
+
+def _sweep_uploads_once() -> None:
+    """Delete orphaned upload files not owned by a queued/running job."""
+    cutoff = time.time() - UPLOAD_MAX_AGE_SECONDS
+    active = job_queue.active_filepaths() if job_queue else set()
+    upload_dir = Path(settings.upload_dir)
+    if not upload_dir.is_dir():
+        return
+    for path in upload_dir.iterdir():
+        try:
+            if path.is_file() and str(path) not in active and path.stat().st_mtime < cutoff:
+                path.unlink()
+                logger.info(f"Swept orphaned upload: {path.name}")
+        except OSError as e:
+            logger.warning(f"Failed to sweep {path.name}: {e}")
+
+
+async def _sweep_uploads_periodically() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_sweep_uploads_once)
+        except Exception:
+            logger.exception("Upload sweep failed")
+        await asyncio.sleep(UPLOAD_SWEEP_INTERVAL_SECONDS)
+
+
+def _gpu_memory_mb() -> tuple[Optional[int], Optional[int]]:
+    """(used, total) device memory in MiB, or (None, None) without CUDA."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            free, total = torch.cuda.mem_get_info()
+            return round((total - free) / 2**20), round(total / 2**20)
+    except Exception:
+        pass
+    return None, None
 
 
 # ============== Health Endpoints ==============
@@ -206,12 +308,19 @@ async def health_check():
 
     status = "healthy" if (models_loaded and qdrant_connected) else "degraded"
 
+    gpu_used, gpu_total = _gpu_memory_mb()
+    jobs = job_queue.counts() if job_queue else {}
+
     return HealthResponse(
         status=status,
         version="1.1.0",
         models_loaded=models_loaded,
         qdrant_connected=qdrant_connected,
-        device=device
+        device=device,
+        gpu_memory_used_mb=gpu_used,
+        gpu_memory_total_mb=gpu_total,
+        jobs_queued=jobs.get("queued"),
+        jobs_running=jobs.get("running"),
     )
 
 
@@ -788,7 +897,9 @@ def get_statistics():
             "system": {
                 "device": services.diarization.get_device(),
                 "diarization_model": settings.diarization_model,
-                "embedding_model": settings.embedding_model
+                "embedding_model": settings.embedding_model,
+                "gpu_memory_used_mb": _gpu_memory_mb()[0],
+                "gpu_memory_total_mb": _gpu_memory_mb()[1]
             },
             "jobs": job_queue.counts() if job_queue else {}
         }
@@ -813,13 +924,14 @@ async def http_exception_handler(request, exc):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    logger.error(f"Unhandled exception: {exc}")
+    # Full traceback stays server-side; clients get a generic message.
+    logger.exception(f"Unhandled exception on {request.method} {request.url.path}")
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(
             error="InternalServerError",
             message="An unexpected error occurred",
-            detail=str(exc)
+            detail=None
         ).model_dump()
     )
 

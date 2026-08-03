@@ -53,6 +53,9 @@ services:
 
       # API settings
       - UPLOAD_DIR=/app/uploads
+      # Optional shared secret for LAN clients (empty = auth disabled).
+      # Set API_KEY in .env; clients send "X-API-Key" or "Authorization: Bearer".
+      - API_KEY=${API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

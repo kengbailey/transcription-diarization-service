@@ -236,12 +236,16 @@ class IdentifyResult(BaseModel):
 
 class HealthResponse(BaseModel):
     """Health check response."""
-    
+
     status: str = Field(..., description="Service status")
     version: str = Field(..., description="API version")
     models_loaded: bool = Field(..., description="Whether ML models are loaded")
     qdrant_connected: bool = Field(..., description="Whether Qdrant is connected")
     device: str = Field(..., description="Compute device being used")
+    gpu_memory_used_mb: Optional[int] = Field(None, description="Device-wide GPU memory in use (MiB)")
+    gpu_memory_total_mb: Optional[int] = Field(None, description="Total GPU memory (MiB)")
+    jobs_queued: Optional[int] = Field(None, description="Jobs waiting in the queue")
+    jobs_running: Optional[int] = Field(None, description="Jobs currently processing")
     
     class Config:
         json_schema_extra = {
