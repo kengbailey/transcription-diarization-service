@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Input, Label } from "@/components/ui/input"
 import { FileUpload } from "@/components/ui/file-upload"
+import { AudioTrimmer } from "@/components/ui/audio-trimmer"
 import { Spinner } from "@/components/ui/spinner"
 import { getSpeakers, registerSpeaker, addSpeakerSample, deleteSpeaker, updateSpeakerName, getSpeakerSamples, deleteSpeakerSample, type Speaker, type SpeakerSample } from "@/lib/api"
 import { getSpeakerColor } from "@/lib/utils"
@@ -17,12 +18,14 @@ export function SpeakersTab() {
   // Add speaker dialog
   const [addDialogOpen, setAddDialogOpen] = React.useState(false)
   const [newSpeakerName, setNewSpeakerName] = React.useState("")
+  const [newSpeakerRawFile, setNewSpeakerRawFile] = React.useState<File | null>(null)
   const [newSpeakerFile, setNewSpeakerFile] = React.useState<File | null>(null)
   const [addingLoading, setAddingLoading] = React.useState(false)
-  
+
   // Add sample dialog
   const [sampleDialogOpen, setSampleDialogOpen] = React.useState(false)
   const [selectedSpeaker, setSelectedSpeaker] = React.useState<Speaker | null>(null)
+  const [sampleRawFile, setSampleRawFile] = React.useState<File | null>(null)
   const [sampleFile, setSampleFile] = React.useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = React.useState(false)
   
@@ -63,12 +66,13 @@ export function SpeakersTab() {
 
   const handleAddSpeaker = async () => {
     if (!newSpeakerName.trim() || !newSpeakerFile) return
-    
+
     try {
       setAddingLoading(true)
       await registerSpeaker(newSpeakerName.trim(), newSpeakerFile)
       setAddDialogOpen(false)
       setNewSpeakerName("")
+      setNewSpeakerRawFile(null)
       setNewSpeakerFile(null)
       loadSpeakers()
     } catch (err) {
@@ -80,12 +84,13 @@ export function SpeakersTab() {
 
   const handleAddSample = async () => {
     if (!selectedSpeaker || !sampleFile) return
-    
+
     try {
       setSampleLoading(true)
       await addSpeakerSample(selectedSpeaker.speaker_id, sampleFile)
       setSampleDialogOpen(false)
       setSelectedSpeaker(null)
+      setSampleRawFile(null)
       setSampleFile(null)
       loadSpeakers()
     } catch (err) {
@@ -93,6 +98,16 @@ export function SpeakersTab() {
     } finally {
       setSampleLoading(false)
     }
+  }
+
+  const handleNewSpeakerFileChange = (file: File | null) => {
+    setNewSpeakerRawFile(file)
+    setNewSpeakerFile(null) // Reset trimmed file when raw file changes
+  }
+
+  const handleSampleFileChange = (file: File | null) => {
+    setSampleRawFile(file)
+    setSampleFile(null) // Reset trimmed file when raw file changes
   }
 
   const handleDeleteSpeaker = async () => {
@@ -308,15 +323,22 @@ export function SpeakersTab() {
       )}
 
       {/* Add Speaker Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent onClose={() => setAddDialogOpen(false)}>
+      <Dialog open={addDialogOpen} onOpenChange={(open) => {
+        setAddDialogOpen(open)
+        if (!open) {
+          setNewSpeakerName("")
+          setNewSpeakerRawFile(null)
+          setNewSpeakerFile(null)
+        }
+      }}>
+        <DialogContent onClose={() => setAddDialogOpen(false)} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add New Speaker</DialogTitle>
             <DialogDescription>
-              Register a new speaker by providing their name and a voice sample.
+              Register a new speaker by providing their name and a voice sample (max 30 seconds).
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="speaker-name">Speaker Name</Label>
@@ -328,20 +350,45 @@ export function SpeakersTab() {
                 disabled={addingLoading}
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label>Voice Sample</Label>
-              <FileUpload
-                value={newSpeakerFile}
-                onChange={setNewSpeakerFile}
-                disabled={addingLoading}
-              />
+              {!newSpeakerRawFile ? (
+                <FileUpload
+                  value={newSpeakerRawFile}
+                  onChange={handleNewSpeakerFileChange}
+                  disabled={addingLoading}
+                />
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground truncate">{newSpeakerRawFile.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleNewSpeakerFileChange(null)}
+                      disabled={addingLoading}
+                    >
+                      Change file
+                    </Button>
+                  </div>
+                  <AudioTrimmer
+                    file={newSpeakerRawFile}
+                    onTrimmedAudio={setNewSpeakerFile}
+                  />
+                  {newSpeakerFile && (
+                    <p className="text-xs text-green-600">
+                      Audio segment ready: {newSpeakerFile.name}
+                    </p>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
-                Upload a clear audio recording of the speaker (10-30 seconds works best).
+                Upload audio and select a segment (10-30 seconds works best).
               </p>
             </div>
           </div>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
@@ -362,26 +409,58 @@ export function SpeakersTab() {
       </Dialog>
 
       {/* Add Sample Dialog */}
-      <Dialog open={sampleDialogOpen} onOpenChange={setSampleDialogOpen}>
-        <DialogContent onClose={() => setSampleDialogOpen(false)}>
+      <Dialog open={sampleDialogOpen} onOpenChange={(open) => {
+        setSampleDialogOpen(open)
+        if (!open) {
+          setSelectedSpeaker(null)
+          setSampleRawFile(null)
+          setSampleFile(null)
+        }
+      }}>
+        <DialogContent onClose={() => setSampleDialogOpen(false)} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add Voice Sample</DialogTitle>
             <DialogDescription>
-              Add another voice sample for {selectedSpeaker?.speaker_name} to improve recognition accuracy.
+              Add another voice sample for {selectedSpeaker?.speaker_name} to improve recognition accuracy (max 30 seconds).
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
-            <FileUpload
-              value={sampleFile}
-              onChange={setSampleFile}
-              disabled={sampleLoading}
-            />
+            {!sampleRawFile ? (
+              <FileUpload
+                value={sampleRawFile}
+                onChange={handleSampleFileChange}
+                disabled={sampleLoading}
+              />
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground truncate">{sampleRawFile.name}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleSampleFileChange(null)}
+                    disabled={sampleLoading}
+                  >
+                    Change file
+                  </Button>
+                </div>
+                <AudioTrimmer
+                  file={sampleRawFile}
+                  onTrimmedAudio={setSampleFile}
+                />
+                {sampleFile && (
+                  <p className="text-xs text-green-600">
+                    Audio segment ready: {sampleFile.name}
+                  </p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground">
-              Adding more samples helps improve speaker identification accuracy.
+              Upload audio and select a segment (10-30 seconds works best).
             </p>
           </div>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
