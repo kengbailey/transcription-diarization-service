@@ -1,5 +1,6 @@
 """FastAPI application for speaker diarization with speaker recognition."""
 
+import asyncio
 import logging
 import os
 import shutil
@@ -19,20 +20,20 @@ from api_models import (
     DiarizationResult,
     ErrorResponse,
     HealthResponse,
-    IdentifiedSegment,
     IdentifyResult,
     RegisterSpeakerResponse,
     Speaker,
     SpeakerListResponse,
     SpeakerSample,
     SpeakerSamplesResponse,
-    SpeakerSegment,
-    TranscriptSegment,
     TranscriptionResult,
     TranscriptionIdentifiedResult,
     UpdateSpeakerRequest,
 )
-from services import DiarizationService, EmbeddingService, SpeakerDBService, WhisperService, TranscriptMerger
+from services import DiarizationService, EmbeddingService, SpeakerDBService
+from services import processing
+from services.job_queue import Job, JobQueue
+from services.processing import Services
 
 
 # Configure logging
@@ -43,52 +44,102 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Global service instances
+# Global state (populated in lifespan)
 settings: Settings = None
-diarization_service: DiarizationService = None
-embedding_service: EmbeddingService = None
-speaker_db_service: SpeakerDBService = None
+services: Services = None
+job_queue: JobQueue = None
+
+# One GPU job at a time. Both the sync endpoints and the job-queue worker
+# funnel through this, so heavy work is serialized explicitly instead of
+# accidentally (by blocking the event loop, as before).
+gpu_semaphore = asyncio.Semaphore(1)
+
+
+async def run_gpu_task(fn, /, *args, **kwargs):
+    """Run a blocking GPU-bound task in a worker thread, serialized."""
+    async with gpu_semaphore:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+JOB_KINDS = {"diarize", "identify", "transcribe-diarized", "transcribe-identified"}
+
+
+async def _execute_job(job: Job) -> dict:
+    """Dispatch a queued job to the matching processing function."""
+    p = job.params
+    if job.kind == "diarize":
+        return await run_gpu_task(
+            processing.run_diarization, services, job.filepath,
+            num_speakers=p.get("num_speakers"),
+            min_speakers=p.get("min_speakers"),
+            max_speakers=p.get("max_speakers"),
+            exclusive=bool(p.get("exclusive", False)),
+        )
+    if job.kind == "identify":
+        return await run_gpu_task(
+            processing.run_identify, services, job.filepath,
+            num_speakers=p.get("num_speakers"),
+            min_speakers=p.get("min_speakers"),
+            max_speakers=p.get("max_speakers"),
+            similarity_threshold=p.get("similarity_threshold"),
+        )
+    return await run_gpu_task(
+        processing.run_transcription, services, job.filepath,
+        identify=(job.kind == "transcribe-identified"),
+        num_speakers=p.get("num_speakers"),
+        min_speakers=p.get("min_speakers"),
+        max_speakers=p.get("max_speakers"),
+        language=p.get("language"),
+        similarity_threshold=p.get("similarity_threshold"),
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
-    global settings, diarization_service, embedding_service, speaker_db_service
-    
+    global settings, services, job_queue
+
     logger.info("Starting speaker diarization API...")
-    
+
     # Load settings
     settings = get_settings()
-    
+
     # Ensure upload directory exists
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
-    
+
     # Initialize services
-    diarization_service = DiarizationService(settings)
-    embedding_service = EmbeddingService(settings)
-    speaker_db_service = SpeakerDBService(settings)
-    
+    services = Services(
+        settings=settings,
+        diarization=DiarizationService(settings),
+        embedding=EmbeddingService(settings),
+        speaker_db=SpeakerDBService(settings),
+    )
+
     # Pre-initialize models (optional, can be done lazily)
     try:
         logger.info("Pre-loading models...")
-        diarization_service.initialize()
-        embedding_service.initialize()
-        speaker_db_service.initialize()
+        services.diarization.initialize()
+        services.embedding.initialize()
+        services.speaker_db.initialize()
         logger.info("All services initialized successfully")
     except Exception as e:
         logger.warning(f"Delayed model loading due to: {e}")
-    
+
+    job_queue = JobQueue(executor=_execute_job, cleanup=cleanup_file)
+    await job_queue.start()
+
     yield
-    
+
     # Cleanup
     logger.info("Shutting down speaker diarization API...")
+    await job_queue.stop()
 
 
 # Create FastAPI app
 app = FastAPI(
     title="Speaker Diarization API",
     description="API for speaker diarization using pyannote community-1 model with speaker recognition via Qdrant",
-    version="1.0.0",
+    version="1.1.0",
     lifespan=lifespan
 )
 
@@ -110,7 +161,7 @@ def validate_audio_file(file: UploadFile) -> None:
     """Validate uploaded audio file."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
+
     ext = Path(file.filename).suffix.lower()
     if ext not in SUPPORTED_FORMATS:
         raise HTTPException(
@@ -124,10 +175,10 @@ async def save_upload_file(file: UploadFile) -> str:
     ext = Path(file.filename).suffix.lower()
     filename = f"{uuid.uuid4()}{ext}"
     filepath = Path(settings.upload_dir) / filename
-    
+
     with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
-    
+
     return str(filepath)
 
 
@@ -140,75 +191,24 @@ def cleanup_file(filepath: str) -> None:
         logger.warning(f"Failed to cleanup file {filepath}: {e}")
 
 
-def identify_diarized_speakers(
-    filepath: str,
-    diarization_result: dict,
-    similarity_threshold: Optional[float] = None,
-) -> tuple[dict, dict]:
-    """Match each diarized speaker against registered speakers.
-
-    Prefers the per-speaker centroid embeddings the diarization pipeline
-    already computed (no extra GPU pass); falls back to per-segment
-    extraction with voting when a centroid is unavailable.
-
-    Returns:
-        (speaker_mapping, speaker_confidences) keyed by diarized speaker label
-    """
-    centroids = diarization_result.get("speaker_embeddings", {})
-
-    speaker_segments = {}
-    for segment in diarization_result["segments"]:
-        speaker_segments.setdefault(segment["speaker"], []).append(segment)
-
-    speaker_mapping = {}
-    speaker_confidences = {}
-
-    for speaker, segments in speaker_segments.items():
-        if speaker in centroids:
-            match = speaker_db_service.identify_speaker(
-                embedding=centroids[speaker],
-                score_threshold=similarity_threshold,
-            )
-        else:
-            segment_embeddings = embedding_service.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=segments,
-                min_duration=0.5,
-            )
-            embeddings = [emb for _, emb in segment_embeddings]
-            match = (
-                speaker_db_service.identify_speaker_by_voting(
-                    embeddings=embeddings,
-                    score_threshold=similarity_threshold,
-                )
-                if embeddings
-                else None
-            )
-
-        speaker_mapping[speaker] = match["speaker_name"] if match else None
-        speaker_confidences[speaker] = match["score"] if match else None
-
-    return speaker_mapping, speaker_confidences
-
-
 # ============== Health Endpoints ==============
 
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Check the health status of the API and its dependencies."""
     models_loaded = (
-        diarization_service.is_initialized and 
-        embedding_service.is_initialized
+        services.diarization.is_initialized and
+        services.embedding.is_initialized
     )
-    qdrant_connected = speaker_db_service.is_connected()
-    
-    device = diarization_service.get_device() if diarization_service else "not initialized"
-    
+    qdrant_connected = await asyncio.to_thread(services.speaker_db.is_connected)
+
+    device = services.diarization.get_device()
+
     status = "healthy" if (models_loaded and qdrant_connected) else "degraded"
-    
+
     return HealthResponse(
         status=status,
-        version="1.0.0",
+        version="1.1.0",
         models_loaded=models_loaded,
         qdrant_connected=qdrant_connected,
         device=device
@@ -220,10 +220,11 @@ async def root():
     """Root endpoint with API information."""
     return {
         "name": "Speaker Diarization API",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "description": "Speaker diarization using pyannote community-1 with speaker recognition",
         "docs_url": "/docs",
-        "health_url": "/health"
+        "health_url": "/health",
+        "jobs_url": "/jobs"
     }
 
 
@@ -239,46 +240,37 @@ async def diarize_audio(
 ):
     """
     Perform speaker diarization on an uploaded audio file.
-    
+
     Returns segments with speaker labels and timing information.
-    
+
     - **file**: Audio file (WAV, MP3, FLAC, OGG, M4A, WEBM)
     - **num_speakers**: Optional exact number of speakers if known
     - **min_speakers**: Optional minimum number of speakers
-    - **max_speakers**: Optional maximum number of speakers  
+    - **max_speakers**: Optional maximum number of speakers
     - **exclusive**: If true, returns non-overlapping segments (useful for transcript alignment)
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
-        # Save uploaded file
         filepath = await save_upload_file(file)
-        
-        # Run diarization
-        result = diarization_service.diarize(
-            audio_path=filepath,
+
+        result = await run_gpu_task(
+            processing.run_diarization, services, filepath,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
-            exclusive=exclusive
+            exclusive=exclusive,
         )
-        
-        # Convert to response model
-        segments = [SpeakerSegment(**seg) for seg in result["segments"]]
-        
-        return DiarizationResult(
-            segments=segments,
-            num_speakers=result["num_speakers"],
-            audio_duration=result["audio_duration"],
-            processing_time=result["processing_time"],
-            exclusive=result["exclusive"]
-        )
-        
+
+        return DiarizationResult(**result)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Diarization failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
@@ -294,90 +286,57 @@ async def register_speaker(
 ):
     """
     Register a new speaker with audio sample(s) for later identification.
-    
+
     The audio file should contain speech from the speaker you want to register.
     For best results, provide at least 10-30 seconds of clear speech.
-    
+
     - **file**: Audio file containing the speaker's voice
     - **speaker_name**: Name or identifier for this speaker
     - **extract_segments**: If true, performs diarization and extracts multiple embeddings
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
-        # Save uploaded file
         filepath = await save_upload_file(file)
-        
-        if extract_segments:
-            # Run diarization to find speech segments
-            diarization_result = diarization_service.diarize(
-                audio_path=filepath,
-                num_speakers=1  # Assume single speaker for registration
-            )
-            
-            # Extract embeddings from each segment
-            segment_embeddings = embedding_service.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=diarization_result["segments"],
-                min_duration=1.0  # Minimum 1 second for good embedding
-            )
-            
-            if not segment_embeddings:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not extract any valid speech segments from the audio"
-                )
-            
-            # Add all embeddings to database
-            embeddings = [emb for _, emb in segment_embeddings]
-            speaker_id = speaker_db_service.add_speaker_embeddings_batch(
-                speaker_name=speaker_name,
-                embeddings=embeddings,
-                audio_source=file.filename
-            )
-            
-            embeddings_count = len(embeddings)
-        else:
-            # Extract single embedding from whole file
-            embedding = embedding_service.extract_embedding(filepath)
-            
-            speaker_id = speaker_db_service.add_speaker_embedding(
-                speaker_name=speaker_name,
-                embedding=embedding,
-                audio_source=file.filename
-            )
-            
-            embeddings_count = 1
-        
-        return RegisterSpeakerResponse(
-            speaker_id=speaker_id,
+
+        registration = await run_gpu_task(
+            processing.run_register_speaker, services, filepath,
             speaker_name=speaker_name,
-            embeddings_count=embeddings_count,
-            message=f"Speaker registered successfully with {embeddings_count} embedding(s)"
+            extract_segments=extract_segments,
+            audio_source=file.filename,
         )
-        
+
+        return RegisterSpeakerResponse(
+            speaker_id=registration["speaker_id"],
+            speaker_name=speaker_name,
+            embeddings_count=registration["embeddings_count"],
+            message=f"Speaker registered successfully with {registration['embeddings_count']} embedding(s)"
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Speaker registration failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
 
 
 @app.get("/speakers", response_model=SpeakerListResponse, tags=["Speaker Recognition"])
-async def list_speakers():
+def list_speakers():
     """
     List all registered speakers in the database.
-    
+
     Returns speaker information including number of stored embeddings.
     """
     try:
-        speakers_data = speaker_db_service.get_all_speakers()
-        
+        speakers_data = services.speaker_db.get_all_speakers()
+
         speakers = []
         for s in speakers_data:
             speakers.append(Speaker(
@@ -386,35 +345,35 @@ async def list_speakers():
                 embeddings_count=s["embeddings_count"],
                 created_at=datetime.fromisoformat(s["created_at"]) if s.get("created_at") else datetime.utcnow()
             ))
-        
+
         return SpeakerListResponse(
             speakers=speakers,
             total_count=len(speakers)
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to list speakers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/speakers/{speaker_id}", response_model=Speaker, tags=["Speaker Recognition"])
-async def get_speaker(speaker_id: str):
+def get_speaker(speaker_id: str):
     """
     Get information about a specific registered speaker.
     """
     try:
-        speaker_data = speaker_db_service.get_speaker_by_id(speaker_id)
-        
+        speaker_data = services.speaker_db.get_speaker_by_id(speaker_id)
+
         if not speaker_data:
             raise HTTPException(status_code=404, detail="Speaker not found")
-        
+
         return Speaker(
             speaker_id=speaker_data["speaker_id"],
             speaker_name=speaker_data["speaker_name"],
             embeddings_count=speaker_data["embeddings_count"],
             created_at=datetime.fromisoformat(speaker_data["created_at"]) if speaker_data.get("created_at") else datetime.utcnow()
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -423,12 +382,12 @@ async def get_speaker(speaker_id: str):
 
 
 @app.delete("/speakers/{speaker_id}", tags=["Speaker Recognition"])
-async def delete_speaker(speaker_id: str):
+def delete_speaker(speaker_id: str):
     """
     Delete a registered speaker and all their embeddings.
     """
     try:
-        deleted = speaker_db_service.delete_speaker(speaker_id)
+        deleted = services.speaker_db.delete_speaker(speaker_id)
 
         if not deleted:
             raise HTTPException(status_code=404, detail="Speaker not found")
@@ -443,18 +402,18 @@ async def delete_speaker(speaker_id: str):
 
 
 @app.patch("/speakers/{speaker_id}", response_model=Speaker, tags=["Speaker Recognition"])
-async def update_speaker(speaker_id: str, request: UpdateSpeakerRequest):
+def update_speaker(speaker_id: str, request: UpdateSpeakerRequest):
     """
     Update a speaker's name.
     """
     try:
-        updated = speaker_db_service.update_speaker_name(speaker_id, request.speaker_name)
+        updated = services.speaker_db.update_speaker_name(speaker_id, request.speaker_name)
 
         if not updated:
             raise HTTPException(status_code=404, detail="Speaker not found")
 
         # Fetch updated speaker info
-        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        speaker_info = services.speaker_db.get_speaker_by_id(speaker_id)
         return Speaker(**speaker_info)
 
     except HTTPException:
@@ -465,18 +424,18 @@ async def update_speaker(speaker_id: str, request: UpdateSpeakerRequest):
 
 
 @app.get("/speakers/{speaker_id}/samples", response_model=SpeakerSamplesResponse, tags=["Speaker Recognition"])
-async def get_speaker_samples(speaker_id: str):
+def get_speaker_samples(speaker_id: str):
     """
     Get all voice samples for a specific speaker.
     """
     try:
         # Get speaker info
-        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        speaker_info = services.speaker_db.get_speaker_by_id(speaker_id)
         if not speaker_info:
             raise HTTPException(status_code=404, detail="Speaker not found")
 
         # Get samples
-        samples = speaker_db_service.get_speaker_samples(speaker_id)
+        samples = services.speaker_db.get_speaker_samples(speaker_id)
 
         return SpeakerSamplesResponse(
             speaker_id=speaker_id,
@@ -493,7 +452,7 @@ async def get_speaker_samples(speaker_id: str):
 
 
 @app.delete("/speakers/{speaker_id}/samples/{sample_id}", tags=["Speaker Recognition"])
-async def delete_speaker_sample(speaker_id: str, sample_id: str):
+def delete_speaker_sample(speaker_id: str, sample_id: str):
     """
     Delete a specific voice sample from a speaker.
 
@@ -501,7 +460,7 @@ async def delete_speaker_sample(speaker_id: str, sample_id: str):
     """
     try:
         # Check speaker exists and has more than one sample
-        speaker_info = speaker_db_service.get_speaker_by_id(speaker_id)
+        speaker_info = services.speaker_db.get_speaker_by_id(speaker_id)
         if not speaker_info:
             raise HTTPException(status_code=404, detail="Speaker not found")
 
@@ -511,7 +470,7 @@ async def delete_speaker_sample(speaker_id: str, sample_id: str):
                 detail="Cannot delete the last sample. Delete the speaker instead."
             )
 
-        deleted = speaker_db_service.delete_speaker_sample(speaker_id, sample_id)
+        deleted = services.speaker_db.delete_speaker_sample(speaker_id, sample_id)
 
         if not deleted:
             raise HTTPException(status_code=404, detail="Sample not found")
@@ -537,10 +496,10 @@ async def identify_speakers(
 ):
     """
     Perform speaker diarization and identify speakers against registered voices.
-    
+
     This combines diarization with speaker recognition to label detected speakers
     with their registered names when possible.
-    
+
     - **file**: Audio file to process
     - **num_speakers**: Optional exact number of speakers
     - **min_speakers/max_speakers**: Optional speaker count bounds
@@ -548,56 +507,26 @@ async def identify_speakers(
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
-        start_time = time.time()
-        
-        # Save uploaded file
         filepath = await save_upload_file(file)
-        
-        # Run diarization
-        diarization_result = diarization_service.diarize(
-            audio_path=filepath,
+
+        result = await run_gpu_task(
+            processing.run_identify, services, filepath,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
-            exclusive=True  # Use exclusive for cleaner speaker identification
-        )
-        
-        # Identify each speaker
-        speaker_mapping, speaker_confidences = identify_diarized_speakers(
-            filepath, diarization_result, similarity_threshold
+            similarity_threshold=similarity_threshold,
         )
 
-        # Build result segments
-        identified_segments = []
-        for segment in diarization_result["segments"]:
-            speaker = segment["speaker"]
-            identified_segments.append(IdentifiedSegment(
-                speaker=speaker,
-                identified_as=speaker_mapping.get(speaker),
-                confidence=speaker_confidences.get(speaker),
-                start=segment["start"],
-                end=segment["end"],
-                duration=segment["duration"]
-            ))
-        
-        processing_time = time.time() - start_time
-        num_identified = sum(1 for v in speaker_mapping.values() if v is not None)
-        
-        return IdentifyResult(
-            segments=identified_segments,
-            speaker_mapping=speaker_mapping,
-            num_speakers=diarization_result["num_speakers"],
-            num_identified=num_identified,
-            audio_duration=diarization_result["audio_duration"],
-            processing_time=round(processing_time, 3)
-        )
-        
+        return IdentifyResult(**result)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Speaker identification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
@@ -611,77 +540,46 @@ async def add_speaker_sample(
 ):
     """
     Add additional audio sample(s) for an existing registered speaker.
-    
+
     More samples improve speaker recognition accuracy.
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
         # Check if speaker exists
-        speaker = speaker_db_service.get_speaker_by_id(speaker_id)
+        speaker = await asyncio.to_thread(services.speaker_db.get_speaker_by_id, speaker_id)
         if not speaker:
             raise HTTPException(status_code=404, detail="Speaker not found")
-        
-        # Save uploaded file
+
         filepath = await save_upload_file(file)
-        
-        if extract_segments:
-            # Run diarization to find speech segments
-            diarization_result = diarization_service.diarize(
-                audio_path=filepath,
-                num_speakers=1
-            )
-            
-            segment_embeddings = embedding_service.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=diarization_result["segments"],
-                min_duration=1.0
-            )
-            
-            if not segment_embeddings:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not extract any valid speech segments"
-                )
-            
-            embeddings = [emb for _, emb in segment_embeddings]
-            speaker_db_service.add_speaker_embeddings_batch(
-                speaker_name=speaker["speaker_name"],
-                embeddings=embeddings,
-                speaker_id=speaker_id,
-                audio_source=file.filename
-            )
-            
-            new_embeddings = len(embeddings)
-        else:
-            embedding = embedding_service.extract_embedding(filepath)
-            
-            speaker_db_service.add_speaker_embedding(
-                speaker_name=speaker["speaker_name"],
-                embedding=embedding,
-                speaker_id=speaker_id,
-                audio_source=file.filename
-            )
-            
-            new_embeddings = 1
-        
+
+        registration = await run_gpu_task(
+            processing.run_register_speaker, services, filepath,
+            speaker_name=speaker["speaker_name"],
+            extract_segments=extract_segments,
+            audio_source=file.filename,
+            speaker_id=speaker_id,
+        )
+
         # Get updated speaker info
-        updated_speaker = speaker_db_service.get_speaker_by_id(speaker_id)
-        
+        updated_speaker = await asyncio.to_thread(services.speaker_db.get_speaker_by_id, speaker_id)
+
         return RegisterSpeakerResponse(
             speaker_id=speaker_id,
             speaker_name=updated_speaker["speaker_name"],
             embeddings_count=updated_speaker["embeddings_count"],
-            message=f"Added {new_embeddings} new embedding(s) to speaker"
+            message=f"Added {registration['embeddings_count']} new embedding(s) to speaker"
         )
-        
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to add speaker sample: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
@@ -699,84 +597,37 @@ async def transcribe_diarized(
 ):
     """
     Transcribe audio with speaker diarization.
-    
+
     Combines Whisper transcription with pyannote diarization to produce
     speaker-attributed transcripts.
-    
+
     - **file**: Audio file to process
     - **num_speakers**: Optional exact number of speakers if known
     - **language**: Optional language code (auto-detect if not specified)
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
-        start_time = time.time()
-        
-        # Save uploaded file
         filepath = await save_upload_file(file)
-        
-        # Initialize services (lazily)
-        whisper_service = WhisperService(settings)
-        whisper_service.initialize()
-        merger = TranscriptMerger()
-        
-        # Run diarization and transcription in parallel conceptually
-        # (but sequentially here for simplicity)
-        
-        # 1. Run diarization
-        logger.info("Running diarization...")
-        diarization_result = diarization_service.diarize(
-            audio_path=filepath,
+
+        result = await run_gpu_task(
+            processing.run_transcription, services, filepath,
+            identify=False,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
-            exclusive=True
+            language=language,
         )
-        
-        # 2. Run Whisper transcription
-        logger.info("Running Whisper transcription...")
-        whisper_result = whisper_service.transcribe_with_words(
-            audio_path=filepath,
-            language=language
-        )
-        
-        # 3. Merge results
-        logger.info("Merging transcription with diarization...")
-        merged = merger.merge_transcription_with_diarization(
-            whisper_result=whisper_result,
-            diarization_result=diarization_result
-        )
-        
-        processing_time = time.time() - start_time
-        
-        # Build response segments
-        segments = [
-            TranscriptSegment(
-                speaker=seg["speaker"],
-                identified_as=seg.get("identified_as"),
-                confidence=seg.get("confidence"),
-                start=seg["start"],
-                end=seg["end"],
-                duration=seg.get("duration", seg["end"] - seg["start"]),
-                text=seg["text"]
-            )
-            for seg in merged["segments"]
-        ]
-        
-        return TranscriptionResult(
-            text=merged["text"],
-            segments=segments,
-            num_speakers=merged["num_speakers"],
-            duration=merged["duration"],
-            language=merged.get("language"),
-            processing_time=round(processing_time, 3)
-        )
-        
+
+        return TranscriptionResult(**result)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Transcription with diarization failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
@@ -793,10 +644,10 @@ async def transcribe_identified(
 ):
     """
     Transcribe audio with speaker diarization and identification.
-    
+
     Combines Whisper transcription with pyannote diarization and matches
     speakers against registered voices in Qdrant.
-    
+
     - **file**: Audio file to process
     - **num_speakers**: Optional exact number of speakers if known
     - **language**: Optional language code (auto-detect if not specified)
@@ -804,97 +655,130 @@ async def transcribe_identified(
     """
     validate_audio_file(file)
     filepath = None
-    
+
     try:
-        start_time = time.time()
-        
-        # Save uploaded file
         filepath = await save_upload_file(file)
-        
-        # Initialize services (lazily)
-        whisper_service = WhisperService(settings)
-        whisper_service.initialize()
-        merger = TranscriptMerger()
-        
-        # 1. Run diarization
-        logger.info("Running diarization...")
-        diarization_result = diarization_service.diarize(
-            audio_path=filepath,
+
+        result = await run_gpu_task(
+            processing.run_transcription, services, filepath,
+            identify=True,
             num_speakers=num_speakers,
             min_speakers=min_speakers,
             max_speakers=max_speakers,
-            exclusive=True
-        )
-        
-        # 2. Identify speakers
-        logger.info("Identifying speakers...")
-        speaker_mapping, speaker_confidences = identify_diarized_speakers(
-            filepath, diarization_result, similarity_threshold
+            language=language,
+            similarity_threshold=similarity_threshold,
         )
 
-        # 3. Run Whisper transcription
-        logger.info("Running Whisper transcription...")
-        whisper_result = whisper_service.transcribe_with_words(
-            audio_path=filepath,
-            language=language
-        )
-        
-        # 4. Merge results with speaker identification
-        logger.info("Merging transcription with diarization and identification...")
-        merged = merger.merge_transcription_with_diarization(
-            whisper_result=whisper_result,
-            diarization_result=diarization_result,
-            speaker_mapping=speaker_mapping,
-            speaker_confidences=speaker_confidences
-        )
-        
-        processing_time = time.time() - start_time
-        
-        # Build response segments
-        segments = [
-            TranscriptSegment(
-                speaker=seg["speaker"],
-                identified_as=seg.get("identified_as"),
-                confidence=seg.get("confidence"),
-                start=seg["start"],
-                end=seg["end"],
-                duration=seg.get("duration", seg["end"] - seg["start"]),
-                text=seg["text"]
-            )
-            for seg in merged["segments"]
-        ]
-        
-        num_identified = sum(1 for v in speaker_mapping.values() if v is not None)
-        
-        return TranscriptionIdentifiedResult(
-            text=merged["text"],
-            segments=segments,
-            speaker_mapping=speaker_mapping,
-            num_speakers=merged["num_speakers"],
-            num_identified=num_identified,
-            duration=merged["duration"],
-            language=merged.get("language"),
-            processing_time=round(processing_time, 3)
-        )
-        
+        return TranscriptionIdentifiedResult(**result)
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Transcription with identification failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    
+
     finally:
         if filepath:
             cleanup_file(filepath)
 
 
+# ============== Job Queue Endpoints ==============
+
+@app.post("/jobs/{kind}", status_code=202, tags=["Jobs"])
+async def submit_job(
+    kind: str,
+    file: UploadFile = File(..., description="Audio file to process"),
+    num_speakers: Optional[int] = Form(None, description="Exact number of speakers (if known)"),
+    min_speakers: Optional[int] = Form(None, description="Minimum number of speakers"),
+    max_speakers: Optional[int] = Form(None, description="Maximum number of speakers"),
+    exclusive: bool = Form(False, description="Exclusive diarization (diarize jobs only)"),
+    language: Optional[str] = Form(None, description="Language code (transcribe jobs only)"),
+    similarity_threshold: Optional[float] = Form(None, description="Speaker matching threshold (identify/transcribe-identified)")
+):
+    """
+    Submit audio for asynchronous processing and return immediately.
+
+    Job kinds: `diarize`, `identify`, `transcribe-diarized`,
+    `transcribe-identified`. Jobs run one at a time in submission order —
+    the right choice for long recordings, which would otherwise hold an HTTP
+    connection open for many minutes. Poll `GET /jobs/{job_id}` for status
+    and the result.
+    """
+    if kind not in JOB_KINDS:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown job kind '{kind}'. Valid kinds: {', '.join(sorted(JOB_KINDS))}"
+        )
+
+    validate_audio_file(file)
+    filepath = await save_upload_file(file)
+
+    params = {
+        "num_speakers": num_speakers,
+        "min_speakers": min_speakers,
+        "max_speakers": max_speakers,
+        "exclusive": exclusive,
+        "language": language,
+        "similarity_threshold": similarity_threshold,
+    }
+    params = {k: v for k, v in params.items() if v not in (None, False)}
+
+    job = job_queue.submit(kind, filepath, file.filename, params)
+
+    return job.serialize(
+        queue_position=job_queue.queue_position(job),
+        include_result=False,
+    )
+
+
+@app.get("/jobs", tags=["Jobs"])
+async def list_jobs():
+    """List recent jobs (newest first), without result payloads."""
+    jobs = job_queue.list_jobs()
+    return {
+        "jobs": [
+            j.serialize(queue_position=job_queue.queue_position(j), include_result=False)
+            for j in jobs
+        ],
+        **job_queue.counts(),
+    }
+
+
+@app.get("/jobs/{job_id}", tags=["Jobs"])
+async def get_job(job_id: str):
+    """Get a job's status; includes the result once completed."""
+    job = job_queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.serialize(queue_position=job_queue.queue_position(job))
+
+
+@app.delete("/jobs/{job_id}", tags=["Jobs"])
+async def delete_job(job_id: str):
+    """Cancel a queued job, or remove a finished job's record."""
+    job = job_queue.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status == "queued":
+        job_queue.cancel(job_id)
+        return {"message": f"Job {job_id} cancelled"}
+    if job.status == "running":
+        raise HTTPException(status_code=409, detail="Job is already running and cannot be cancelled")
+
+    job_queue.remove(job_id)
+    return {"message": f"Job {job_id} removed"}
+
+
 # ============== Statistics Endpoints ==============
 
 @app.get("/stats", tags=["Statistics"])
-async def get_statistics():
+def get_statistics():
     """Get statistics about the speaker database and system."""
     try:
-        collection_stats = speaker_db_service.get_collection_stats()
-        speakers = speaker_db_service.get_all_speakers()
-        
+        collection_stats = services.speaker_db.get_collection_stats()
+        speakers = services.speaker_db.get_all_speakers()
+
         return {
             "database": collection_stats,
             "speakers": {
@@ -902,12 +786,13 @@ async def get_statistics():
                 "total_embeddings": sum(s["embeddings_count"] for s in speakers)
             },
             "system": {
-                "device": diarization_service.get_device(),
+                "device": services.diarization.get_device(),
                 "diarization_model": settings.diarization_model,
                 "embedding_model": settings.embedding_model
-            }
+            },
+            "jobs": job_queue.counts() if job_queue else {}
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to get statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
