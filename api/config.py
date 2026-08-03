@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Transcode uploads to 16 kHz mono WAV before sending — required for ASR
     # servers that only accept WAV (parakeet.cpp)
     whisper_send_wav: bool = False
+    # Split WAV uploads into chunks of this many seconds (0 = never split).
+    # parakeet.cpp's attention memory grows ~quadratically with input length
+    # and it hard-crashes on CUDA OOM (measured: a 10-min chunk wants ~14 GB);
+    # timestamps are re-offset and merged after transcription.
+    whisper_chunk_seconds: int = 180
     
     class Config:
         env_file = ".env"
