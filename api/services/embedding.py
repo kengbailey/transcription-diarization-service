@@ -1,4 +1,14 @@
-"""Speaker embedding extraction service using pyannote/wespeaker."""
+"""Speaker embedding extraction service (wespeaker family).
+
+Supports two backends, chosen by the configured model:
+- a pyannote checkpoint (e.g. pyannote/wespeaker-voxceleb-resnet34-LM),
+  loaded via Model + Inference
+- a wespeaker ONNX export (path ending in .onnx, e.g. ResNet221-LM), run via
+  pyannote's ONNX backend + onnxruntime
+
+Embeddings from different models live in different spaces — never mix them
+in the same Qdrant collection, even when dimensions match.
+"""
 
 import logging
 import os
@@ -18,9 +28,12 @@ from services.cuda_recovery import with_cuda_retry
 
 logger = logging.getLogger(__name__)
 
+# Sample rate the wespeaker ONNX frontend expects
+ONNX_SAMPLE_RATE = 16000
+
 
 class EmbeddingService:
-    """Service for extracting speaker embeddings using wespeaker model."""
+    """Service for extracting speaker embeddings using wespeaker models."""
 
     def __init__(self, settings: Settings):
         """Initialize the embedding service.
@@ -31,6 +44,7 @@ class EmbeddingService:
         self.settings = settings
         self.model: Optional[Model] = None
         self.inference: Optional[Inference] = None
+        self.onnx_embedding = None
         self.device: Optional[torch.device] = None
         self._initialized = False
 
@@ -60,23 +74,33 @@ class EmbeddingService:
         if self.settings.huggingface_token:
             os.environ["HF_TOKEN"] = self.settings.huggingface_token
 
-        # Load the model
         try:
-            # Try loading from local path first (for offline use)
-            local_model_path = Path(self.settings.model_cache_dir) / "pyannote-wespeaker-voxceleb-resnet34-LM"
+            model_ref = self.settings.embedding_model
+            if model_ref.endswith(".onnx"):
+                from pyannote.audio.pipelines.speaker_verification import (
+                    ONNXWeSpeakerPretrainedSpeakerEmbedding,
+                )
 
-            if local_model_path.exists():
-                logger.info(f"Loading embedding model from local path: {local_model_path}")
-                self.model = Model.from_pretrained(str(local_model_path))
+                logger.info(f"Loading ONNX embedding model: {model_ref}")
+                self.onnx_embedding = ONNXWeSpeakerPretrainedSpeakerEmbedding(
+                    model_ref, device=self.device
+                )
             else:
-                logger.info(f"Loading embedding model from HuggingFace: {self.settings.embedding_model}")
-                self.model = Model.from_pretrained(self.settings.embedding_model)
+                # Try loading from local path first (for offline use)
+                local_model_path = Path(self.settings.model_cache_dir) / "pyannote-wespeaker-voxceleb-resnet34-LM"
 
-            # Create inference object with whole audio window
-            self.inference = Inference(self.model, window="whole")
+                if local_model_path.exists():
+                    logger.info(f"Loading embedding model from local path: {local_model_path}")
+                    self.model = Model.from_pretrained(str(local_model_path))
+                else:
+                    logger.info(f"Loading embedding model from HuggingFace: {model_ref}")
+                    self.model = Model.from_pretrained(model_ref)
 
-            # Move to device
-            self.inference.to(self.device)
+                # Create inference object with whole audio window
+                self.inference = Inference(self.model, window="whole")
+
+                # Move to device
+                self.inference.to(self.device)
 
             self._initialized = True
             logger.info("Speaker embedding model initialized successfully")
@@ -91,11 +115,27 @@ class EmbeddingService:
         return self._initialized
 
     @with_cuda_retry("_reinitialize")
-    def _infer(self, audio_input: dict) -> np.ndarray:
-        """Run the embedding model on an in-memory waveform."""
+    def extract_embedding_from_waveform(
+        self,
+        waveform: torch.Tensor,
+        sample_rate: int,
+    ) -> np.ndarray:
+        """Extract one embedding from an in-memory waveform (channels, samples)."""
         if not self._initialized:
             self.initialize()
-        return self.inference(audio_input)
+
+        if self.onnx_embedding is not None:
+            if waveform.shape[0] > 1:
+                waveform = waveform.mean(dim=0, keepdim=True)
+            if sample_rate != ONNX_SAMPLE_RATE:
+                waveform = torchaudio.functional.resample(
+                    waveform, sample_rate, ONNX_SAMPLE_RATE
+                )
+            # (batch=1, channel=1, samples) -> (1, dimension)
+            embedding = self.onnx_embedding(waveform.unsqueeze(0))
+            return np.asarray(embedding)
+
+        return self.inference({"waveform": waveform, "sample_rate": sample_rate})
 
     def extract_embedding(self, audio_path: str) -> np.ndarray:
         """Extract a single embedding from an entire audio file.
@@ -108,9 +148,8 @@ class EmbeddingService:
         """
         logger.info(f"Extracting embedding from: {audio_path}")
 
-        # Preload audio with torchaudio to bypass torchcodec chunk issues
         waveform, sample_rate = torchaudio.load(audio_path)
-        embedding = self._infer({"waveform": waveform, "sample_rate": sample_rate})
+        embedding = self.extract_embedding_from_waveform(waveform, sample_rate)
 
         logger.info(f"Embedding extracted, shape: {embedding.shape}")
 
@@ -149,7 +188,7 @@ class EmbeddingService:
             segment_waveform = waveform[:, start_sample:end_sample]
 
             try:
-                embedding = self._infer({"waveform": segment_waveform, "sample_rate": sample_rate})
+                embedding = self.extract_embedding_from_waveform(segment_waveform, sample_rate)
                 results.append((segment, embedding))
             except Exception as e:
                 logger.warning(f"Failed to extract embedding for segment: {e}")
@@ -190,6 +229,7 @@ class EmbeddingService:
         self._initialized = False
         self.model = None
         self.inference = None
+        self.onnx_embedding = None
         self.initialize()
         if previous_device is not None and self.device != previous_device:
             logger.critical(

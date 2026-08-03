@@ -9,6 +9,11 @@ huggingface-hub==1.2.1
 # Pyannote speaker diarization (4.0.x required for community-1 model with PLDA)
 pyannote.audio==4.0.7
 
+# ONNX runtime for the wespeaker ResNet221 speaker-ID embedding
+# (1.22 is the last CUDA 12.x build; 1.23+ require the CUDA 13 runtime,
+# which the base image doesn't ship)
+onnxruntime-gpu==1.22.0
+
 # FastAPI and server
 fastapi==0.124.0
 uvicorn[standard]==0.38.0

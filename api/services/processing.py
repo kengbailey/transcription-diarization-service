@@ -31,9 +31,20 @@ class Services:
     speaker_db: SpeakerDBService
 
 
+_INTERNAL_DIARIZATION_KEYS = {"speaker_embeddings", "waveform", "sample_rate"}
+
+# Cap on per-speaker audio used to build the identification embedding
+MAX_IDENTIFY_SECONDS = 60.0
+# Segments shorter than this contribute nothing useful to an embedding
+MIN_IDENTIFY_SEGMENT_SECONDS = 0.5
+
+
 def _public_diarization(diarization_result: dict) -> dict:
-    """Drop non-JSON-serializable internals (numpy centroids) from a result."""
-    return {k: v for k, v in diarization_result.items() if k != "speaker_embeddings"}
+    """Drop non-JSON-serializable internals (numpy/tensors) from a result."""
+    return {
+        k: v for k, v in diarization_result.items()
+        if k not in _INTERNAL_DIARIZATION_KEYS
+    }
 
 
 def identify_diarized_speakers(
@@ -44,14 +55,24 @@ def identify_diarized_speakers(
 ) -> tuple[dict, dict]:
     """Match each diarized speaker against registered speakers.
 
-    Prefers the per-speaker centroid embeddings the diarization pipeline
-    already computed (no extra GPU pass); falls back to per-segment
-    extraction with voting when a centroid is unavailable.
+    Builds one identification embedding per speaker by concatenating their
+    longest segments (up to MAX_IDENTIFY_SECONDS) and matching it against
+    Qdrant. The diarization pipeline's internal centroids are deliberately
+    NOT used: they live in the pipeline's own embedding space (ResNet34),
+    while enrollment uses the standalone embedding model — the spaces are
+    incompatible even though the dimensions match.
 
     Returns:
         (speaker_mapping, speaker_confidences) keyed by diarized speaker label
     """
-    centroids = diarization_result.get("speaker_embeddings", {})
+    import torch
+
+    waveform = diarization_result.get("waveform")
+    sample_rate = diarization_result.get("sample_rate")
+    if waveform is None:
+        # Not produced by DiarizationService.diarize — decode once ourselves
+        import torchaudio
+        waveform, sample_rate = torchaudio.load(filepath)
 
     speaker_segments = {}
     for segment in diarization_result["segments"]:
@@ -61,31 +82,41 @@ def identify_diarized_speakers(
     speaker_confidences = {}
 
     for speaker, segments in speaker_segments.items():
-        if speaker in centroids:
-            match = services.speaker_db.identify_speaker(
-                embedding=centroids[speaker],
-                score_threshold=similarity_threshold,
+        pieces = []
+        total = 0.0
+        for seg in sorted(segments, key=lambda s: s["end"] - s["start"], reverse=True):
+            duration = seg["end"] - seg["start"]
+            if duration < MIN_IDENTIFY_SEGMENT_SECONDS:
+                break  # sorted by duration — the rest are shorter still
+            take = min(duration, MAX_IDENTIFY_SECONDS - total)
+            if take <= 0:
+                break
+            start_sample = int(seg["start"] * sample_rate)
+            end_sample = int((seg["start"] + take) * sample_rate)
+            pieces.append(waveform[:, start_sample:end_sample])
+            total += take
+
+        match = None
+        if pieces:
+            speaker_waveform = torch.cat(pieces, dim=1)
+            embedding = services.embedding.extract_embedding_from_waveform(
+                speaker_waveform, sample_rate
             )
-        else:
-            segment_embeddings = services.embedding.extract_embeddings_for_segments(
-                audio_path=filepath,
-                segments=segments,
-                min_duration=0.5,
-            )
-            embeddings = [emb for _, emb in segment_embeddings]
-            match = (
-                services.speaker_db.identify_speaker_by_voting(
-                    embeddings=embeddings,
+            if not _has_nan(embedding):
+                match = services.speaker_db.identify_speaker(
+                    embedding=embedding,
                     score_threshold=similarity_threshold,
                 )
-                if embeddings
-                else None
-            )
 
         speaker_mapping[speaker] = match["speaker_name"] if match else None
         speaker_confidences[speaker] = match["score"] if match else None
 
     return speaker_mapping, speaker_confidences
+
+
+def _has_nan(embedding) -> bool:
+    import numpy as np
+    return bool(np.any(np.isnan(np.asarray(embedding))))
 
 
 def run_diarization(

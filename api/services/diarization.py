@@ -207,7 +207,11 @@ class DiarizationService:
             "audio_duration": round(audio_duration, 3),
             "processing_time": round(processing_time, 3),
             "exclusive": exclusive,
-            "speaker_embeddings": speaker_embeddings
+            "speaker_embeddings": speaker_embeddings,
+            # In-memory audio, so downstream identification can slice speaker
+            # segments without re-decoding the file. Stripped before responses.
+            "waveform": waveform,
+            "sample_rate": sample_rate
         }
 
     def _reinitialize_pipeline(self) -> None:

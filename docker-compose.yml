@@ -27,17 +27,26 @@ services:
       
       # Model settings
       - DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
-      - EMBEDDING_MODEL=pyannote/wespeaker-voxceleb-resnet34-LM
+      # Speaker-ID embedding: wespeaker ResNet221-LM (ONNX, Apache-2.0),
+      # ~30% lower verification EER than the ResNet34 the diarization
+      # pipeline uses internally. Same 256 dims, DIFFERENT space — vectors
+      # from the two models must never share a Qdrant collection.
+      - EMBEDDING_MODEL=/app/models/wespeaker-resnet221/voxceleb_resnet221_LM.onnx
       - MODEL_CACHE_DIR=/app/models
       
       # Qdrant connection
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - COLLECTION_NAME=work_speaker_embeddings
+      # Fresh collection for the ResNet221 embedding space (old ResNet34
+      # collections speaker_embeddings / work_speaker_embeddings remain on
+      # disk, unused)
+      - COLLECTION_NAME=speakers_resnet221
 
       # Processing settings
       - DEVICE=auto  # auto, cuda, or cpu
-      - SIMILARITY_THRESHOLD=0.7
+      # Calibrated for ResNet221 against the enrolled roster (2026-08-03):
+      # worst cross-speaker score 0.583, genuine meeting matches 0.72-0.93
+      - SIMILARITY_THRESHOLD=0.65
 
       # VRAM mitigations for pyannote-audio#1963 (multi-GB transient spike in
       # the embedding stage on long files)
@@ -52,6 +61,7 @@ services:
       - WHISPER_API_URL=http://parakeet:8080/v1
       - WHISPER_MODEL=tdt-0.6b-v3
       - WHISPER_SEND_WAV=true
+      - WHISPER_CHUNK_SECONDS=180  # parakeet.cpp attention memory grows ~quadratically; 3-min chunks need ~1.3GB vs ~14GB for 10-min
       - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
       # Whisper alternative (speaches container on the host):
       # - WHISPER_API_URL=http://host.docker.internal:8000/v1
