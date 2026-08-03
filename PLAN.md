@@ -35,7 +35,11 @@ Get the working tree clean and truthful before building on it.
 5. **Commit the CUDA-recovery work — but slimmed (see Phase 1.4).**
 6. **Fix doc drift:** README says pyannote 3.1; AGENTS.md says 4.0 + `speaker-diarization-3.1`; reality is 4.0.2 + `community-1` on GPU and `3.1` on the CPU compose. Make the docs match reality and align the two compose files.
 
-## Phase 1 — Correctness & stability (2–4 days)
+## Phase 1 — Correctness & stability (2–4 days) — ✅ done 2026-08-03 (commits 23680ed, 518b205, d3cf9a5)
+
+> Verified against real meeting audio: exclusive diarization has zero overlaps, centroid-based identification matched 5/5 speakers and adds ~5s to a 16-minute meeting (was one GPU pass per segment), full transcribe-identified works via the local speaches container. VRAM peaked at 10.2 GB during a 16-min job with EMBEDDING_BATCH_SIZE=16.
+>
+> **Soak test passed:** 2.55-hour meeting (9172s) through /transcribe-identified in 19m18s (RTF 0.126) — 3 speakers, 3/3 identified, 514 transcript segments. VRAM peaked at 12.5 GB with speaches' whisper model co-resident (11.5 GB headroom). Zero CUDA errors, zero retries triggered. Single-box operation on the 3090 is confirmed stable with the #1963 mitigations.
 
 The biggest wins are *deletions*: pyannote 4.x now provides outputs that replace two chunks of custom code, each of which currently has a live bug.
 
