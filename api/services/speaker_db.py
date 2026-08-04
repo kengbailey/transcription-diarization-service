@@ -632,12 +632,12 @@ class SpeakerDBService:
         
         try:
             info = self.client.get_collection(self.settings.collection_name)
-            
+
+            # qdrant-client 1.18 removed CollectionInfo.vectors_count
             return {
                 "collection_name": self.settings.collection_name,
-                "vectors_count": info.vectors_count,
                 "points_count": info.points_count,
-                "status": info.status.name
+                "status": info.status.name if hasattr(info.status, "name") else str(info.status)
             }
         except Exception as e:
             logger.error(f"Failed to get collection stats: {e}")

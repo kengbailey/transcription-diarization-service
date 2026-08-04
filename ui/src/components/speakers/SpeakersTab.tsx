@@ -204,6 +204,23 @@ export function SpeakersTab() {
     }
   }
 
+  // Single close path for each dialog so Cancel, the X button, Escape, and
+  // backdrop clicks all clear the form — leftover state from a cancelled
+  // dialog could silently register the wrong audio under the wrong name
+  const closeAddDialog = () => {
+    setAddDialogOpen(false)
+    setNewSpeakerName("")
+    setNewSpeakerRawFile(null)
+    setNewSpeakerFile(null)
+  }
+
+  const closeSampleDialog = () => {
+    setSampleDialogOpen(false)
+    setSelectedSpeaker(null)
+    setSampleRawFile(null)
+    setSampleFile(null)
+  }
+
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString(undefined, {
       year: "numeric",
@@ -238,13 +255,17 @@ export function SpeakersTab() {
 
       {/* Error message */}
       {error && (
-        <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive">
-          {error}
+        <div className="flex items-center justify-between p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={() => { setError(null); loadSpeakers() }}>
+            Retry
+          </Button>
         </div>
       )}
 
-      {/* Speaker grid */}
-      {speakers.length === 0 ? (
+      {/* Speaker grid (suppress the empty-state card when the load failed —
+          zero speakers and "couldn't fetch speakers" are different states) */}
+      {speakers.length === 0 && !error ? (
         <Card className="p-12">
           <div className="flex flex-col items-center justify-center text-center">
             <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
@@ -269,14 +290,14 @@ export function SpeakersTab() {
                 <div className={`h-2 ${color.bg.replace('/20', '')}`} />
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${color.bg} ${color.text}`}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center ${color.bg} ${color.text}`}>
                         <span className="font-semibold text-sm">
                           {speaker.speaker_name.slice(0, 2).toUpperCase()}
                         </span>
                       </div>
-                      <div>
-                        <h3 className="font-semibold">{speaker.speaker_name}</h3>
+                      <div className="min-w-0">
+                        <h3 className="font-semibold truncate" title={speaker.speaker_name}>{speaker.speaker_name}</h3>
                         <p className="text-xs text-muted-foreground">
                           ID: {speaker.speaker_id.slice(0, 8)}...
                         </p>
@@ -335,15 +356,8 @@ export function SpeakersTab() {
       )}
 
       {/* Add Speaker Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={(open) => {
-        setAddDialogOpen(open)
-        if (!open) {
-          setNewSpeakerName("")
-          setNewSpeakerRawFile(null)
-          setNewSpeakerFile(null)
-        }
-      }}>
-        <DialogContent onClose={() => setAddDialogOpen(false)} className="max-w-2xl">
+      <Dialog open={addDialogOpen} onOpenChange={(open) => { if (!open) closeAddDialog() }}>
+        <DialogContent onClose={closeAddDialog} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add New Speaker</DialogTitle>
             <DialogDescription>
@@ -404,7 +418,7 @@ export function SpeakersTab() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setAddDialogOpen(false)}
+              onClick={closeAddDialog}
               disabled={addingLoading}
             >
               Cancel
@@ -421,15 +435,8 @@ export function SpeakersTab() {
       </Dialog>
 
       {/* Add Sample Dialog */}
-      <Dialog open={sampleDialogOpen} onOpenChange={(open) => {
-        setSampleDialogOpen(open)
-        if (!open) {
-          setSelectedSpeaker(null)
-          setSampleRawFile(null)
-          setSampleFile(null)
-        }
-      }}>
-        <DialogContent onClose={() => setSampleDialogOpen(false)} className="max-w-2xl">
+      <Dialog open={sampleDialogOpen} onOpenChange={(open) => { if (!open) closeSampleDialog() }}>
+        <DialogContent onClose={closeSampleDialog} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add Voice Sample</DialogTitle>
             <DialogDescription>
@@ -476,7 +483,7 @@ export function SpeakersTab() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setSampleDialogOpen(false)}
+              onClick={closeSampleDialog}
               disabled={sampleLoading}
             >
               Cancel

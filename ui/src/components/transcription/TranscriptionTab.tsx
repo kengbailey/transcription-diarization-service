@@ -45,6 +45,10 @@ export function TranscriptionTab() {
   // In-flight request, so the user can cancel a long transcription
   const abortRef = React.useRef<AbortController | null>(null)
 
+  // Abort on unmount: tab switches unmount this component, and an orphaned
+  // request would silently hold the server's single GPU slot
+  React.useEffect(() => () => abortRef.current?.abort(), [])
+
   const handleTranscribe = async () => {
     if (!audioFile) return
 
@@ -54,7 +58,8 @@ export function TranscriptionTab() {
     try {
       setLoading(true)
       setError(null)
-      const speakers = numSpeakers ? parseInt(numSpeakers, 10) : undefined
+      const parsed = parseInt(numSpeakers, 10)
+      const speakers = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
       const transcription = await transcribeIdentified(audioFile, speakers, controller.signal)
       // The result view mounts a fresh (paused) audio element
       setIsPlaying(false)

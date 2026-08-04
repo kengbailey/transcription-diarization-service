@@ -1,9 +1,10 @@
 import * as React from "react"
-import { Server, Database, Cpu, CheckCircle, XCircle, RefreshCw, Users, AudioLines } from "lucide-react"
+import { Server, Database, Cpu, CheckCircle, XCircle, RefreshCw, Users, AudioLines, MemoryStick, ListTodo, KeyRound } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input, Label } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
-import { getHealth, getStats, type HealthResponse, type StatsResponse } from "@/lib/api"
+import { getHealth, getStats, getApiKey, setApiKey, type HealthResponse, type StatsResponse } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
 // The API is published on host port 8008 (GPU compose). Build links from the
@@ -15,6 +16,8 @@ export function SettingsTab() {
   const [stats, setStats] = React.useState<StatsResponse | null>(null)
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
+  const [apiKeyInput, setApiKeyInput] = React.useState(getApiKey())
+  const [apiKeySaved, setApiKeySaved] = React.useState(false)
 
   const loadData = React.useCallback(async () => {
     try {
@@ -88,8 +91,22 @@ export function SettingsTab() {
             />
             <StatusItem
               label="Models Loaded"
-              value={health?.models_loaded ? "Yes" : "No"}
-              status={health?.models_loaded ? "success" : "warning"}
+              value={
+                health?.models_loaded
+                  ? "Yes"
+                  : health?.status === "healthy"
+                    ? "Idle (load on demand)"
+                    : "No"
+              }
+              status={
+                health?.models_loaded
+                  ? "success"
+                  // Unloaded-while-healthy is the idle timeout working as
+                  // configured, not a fault
+                  : health?.status === "healthy"
+                    ? "neutral"
+                    : "warning"
+              }
             />
             <StatusItem
               label="Qdrant Connected"
@@ -101,6 +118,22 @@ export function SettingsTab() {
               value={health?.device?.toUpperCase() || "Unknown"}
               status="neutral"
               icon={<Cpu className="w-4 h-4" />}
+            />
+            <StatusItem
+              label="GPU Memory"
+              value={
+                health?.gpu_memory_used_mb != null && health?.gpu_memory_total_mb != null
+                  ? `${(health.gpu_memory_used_mb / 1024).toFixed(1)} / ${(health.gpu_memory_total_mb / 1024).toFixed(1)} GB`
+                  : "N/A"
+              }
+              status="neutral"
+              icon={<MemoryStick className="w-4 h-4" />}
+            />
+            <StatusItem
+              label="Job Queue"
+              value={`${health?.jobs_queued ?? 0} queued, ${health?.jobs_running ?? 0} running`}
+              status="neutral"
+              icon={<ListTodo className="w-4 h-4" />}
             />
           </div>
         </CardContent>
@@ -161,6 +194,35 @@ export function SettingsTab() {
             </div>
           </div>
           
+          <div className="pt-4 border-t space-y-2">
+            <Label htmlFor="api-key" className="flex items-center gap-2">
+              <KeyRound className="w-4 h-4" />
+              API Key
+            </Label>
+            <div className="flex items-center gap-2 max-w-md">
+              <Input
+                id="api-key"
+                type="password"
+                placeholder="Only needed if the server sets API_KEY"
+                value={apiKeyInput}
+                onChange={(e) => { setApiKeyInput(e.target.value); setApiKeySaved(false) }}
+              />
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setApiKey(apiKeyInput.trim())
+                  setApiKeySaved(true)
+                  loadData()
+                }}
+              >
+                {apiKeySaved ? "Saved" : "Save"}
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Stored in this browser only; sent as X-API-Key with every request.
+            </p>
+          </div>
+
           <div className="pt-4 border-t">
             <h4 className="font-medium mb-2">Quick Links</h4>
             <div className="flex flex-wrap gap-2">
