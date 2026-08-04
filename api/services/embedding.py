@@ -222,6 +222,23 @@ class EmbeddingService:
         # Convert from [-1, 1] to [0, 1]
         return float((similarity + 1) / 2)
 
+    def unload(self) -> None:
+        """Release the embedding model and its VRAM; reloads lazily on next use."""
+        if not self._initialized:
+            return
+        logger.info("Unloading speaker embedding model (idle)")
+        self._initialized = False
+        self.model = None
+        self.inference = None
+        self.onnx_embedding = None
+        try:
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            logger.warning(f"VRAM cleanup after unload failed: {e}")
+
     def _reinitialize(self) -> None:
         """Reinitialize the embedding model after a CUDA error."""
         logger.warning("Reinitializing embedding model after CUDA error...")

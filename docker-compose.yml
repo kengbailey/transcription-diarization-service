@@ -53,6 +53,11 @@ services:
       - EMBEDDING_BATCH_SIZE=16
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+      # Unload models after this many idle seconds so the GPU can be shared
+      # with llama-swap LLMs on this host; they reload lazily (~10-20s) on
+      # the next request. 0 = keep loaded forever.
+      - MODEL_IDLE_TIMEOUT=300
+
       # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
       - PYANNOTE_METRICS_ENABLED=false
 

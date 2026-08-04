@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # trigger a multi-GB cuDNN workspace VRAM spike on long files
     # (pyannote-audio#1963). 0 keeps the model default.
     embedding_batch_size: int = 16
+    # Unload the diarization/embedding models after this many seconds of GPU
+    # inactivity, freeing VRAM for co-hosted services (e.g. llama-swap LLMs).
+    # Models reload lazily on the next request (~10-20s). 0 = keep loaded.
+    model_idle_timeout: int = 0
     
     # Speaker recognition settings
     similarity_threshold: float = 0.7  # cosine similarity threshold for speaker matching

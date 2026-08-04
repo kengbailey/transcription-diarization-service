@@ -53,11 +53,48 @@ job_queue: JobQueue = None
 # accidentally (by blocking the event loop, as before).
 gpu_semaphore = asyncio.Semaphore(1)
 
+# Timestamp of the last completed GPU task (drives idle model unloading)
+last_gpu_activity: float = time.time()
+
 
 async def run_gpu_task(fn, /, *args, **kwargs):
     """Run a blocking GPU-bound task in a worker thread, serialized."""
+    global last_gpu_activity
     async with gpu_semaphore:
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        try:
+            return await asyncio.to_thread(fn, *args, **kwargs)
+        finally:
+            last_gpu_activity = time.time()
+
+
+async def _unload_idle_models_periodically():
+    """Free VRAM by unloading models after model_idle_timeout of inactivity.
+
+    Lets the GPU be shared with co-hosted services (llama-swap LLMs etc.);
+    models reload lazily on the next request.
+    """
+    global last_gpu_activity
+    while True:
+        await asyncio.sleep(30)
+        try:
+            timeout = settings.model_idle_timeout
+            if timeout <= 0:
+                continue
+            if not (services.diarization.is_initialized or services.embedding.is_initialized):
+                continue
+            if time.time() - last_gpu_activity < timeout:
+                continue
+            if gpu_semaphore.locked():
+                continue  # a job is running
+            async with gpu_semaphore:
+                # Re-check under the lock: a job may have just finished
+                if time.time() - last_gpu_activity < timeout:
+                    continue
+                logger.info(f"GPU idle for >{timeout}s — unloading models to free VRAM")
+                await asyncio.to_thread(services.diarization.unload)
+                await asyncio.to_thread(services.embedding.unload)
+        except Exception:
+            logger.exception("Idle model unload failed")
 
 
 JOB_KINDS = {"diarize", "identify", "transcribe-diarized", "transcribe-identified"}
@@ -128,12 +165,14 @@ async def lifespan(app: FastAPI):
     await job_queue.start()
 
     sweeper = asyncio.create_task(_sweep_uploads_periodically())
+    idle_unloader = asyncio.create_task(_unload_idle_models_periodically())
 
     yield
 
     # Cleanup
     logger.info("Shutting down speaker diarization API...")
     sweeper.cancel()
+    idle_unloader.cancel()
     await job_queue.stop()
 
 
@@ -306,7 +345,10 @@ async def health_check():
 
     device = services.diarization.get_device()
 
-    status = "healthy" if (models_loaded and qdrant_connected) else "degraded"
+    # With an idle timeout configured, unloaded models are normal operation
+    # (they reload lazily on the next request), not a degraded state
+    models_ok = models_loaded or settings.model_idle_timeout > 0
+    status = "healthy" if (models_ok and qdrant_connected) else "degraded"
 
     gpu_used, gpu_total = _gpu_memory_mb()
     jobs = job_queue.counts() if job_queue else {}

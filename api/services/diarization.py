@@ -214,6 +214,21 @@ class DiarizationService:
             "sample_rate": sample_rate
         }
 
+    def unload(self) -> None:
+        """Release the pipeline and its VRAM; reloads lazily on next use."""
+        if not self._initialized:
+            return
+        logger.info("Unloading diarization pipeline (idle)")
+        self._initialized = False
+        self.pipeline = None
+        try:
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            logger.warning(f"VRAM cleanup after unload failed: {e}")
+
     def _reinitialize_pipeline(self) -> None:
         """Reinitialize the pipeline after a CUDA error."""
         logger.warning("Reinitializing diarization pipeline after CUDA error...")
