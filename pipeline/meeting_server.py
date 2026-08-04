@@ -21,15 +21,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-OUTPUT_DIR = Path("/home/syran/sandbox/transcription-diarization-service/pipeline/output")
+# Env-configurable, same variable names and defaults as pipeline_api.py
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(__file__).resolve().parent / "output")))
 MANIFEST_FILE = OUTPUT_DIR / "manifest.json"
 TRANSCRIPTS_DIR = OUTPUT_DIR / "transcripts"
 SUMMARIES_DIR = OUTPUT_DIR / "summaries"
-AUDIO_DIR = Path("/home/syran/tmp/mtgs/Users/kenbailey/Library/Application Support/com.taperlabs.shadow")
+AUDIO_DIR = Path(os.environ.get(
+    "AUDIO_DIR",
+    "/home/syran/tmp/mtgs/Users/kenbailey/Library/Application Support/com.taperlabs.shadow",
+))
 STATIC_DIR = Path(__file__).parent / "static"
 
-LLM_API = "http://192.168.8.147:9292/v1"
-LLM_MODEL = "gpt-oss-120b"
+# llama-swap on this host loads the model on demand and unloads after TTL
+LLM_API = os.environ.get("LLM_API_URL", "http://localhost:9292/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3.6-35b")
 
 
 def _get_file_date(path, fmt="date"):
