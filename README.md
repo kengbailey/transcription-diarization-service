@@ -81,8 +81,6 @@ speaker_diarization/
 │   ├── src/                # React components
 │   └── README.md           # UI documentation
 │
-├── pipeline/               # Batch meeting-processing scripts (see PLAN.md)
-│
 ├── data/                   # Persistent storage
 │   ├── models/             # Cached ML models
 │   ├── qdrant/             # Vector database

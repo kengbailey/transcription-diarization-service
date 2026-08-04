@@ -28,20 +28,18 @@ Guide for AI coding assistants working on this repository.
 │   └── src/
 │       ├── App.tsx
 │       ├── components/
-│       │   ├── TranscriptionTab.tsx
+│       │   ├── transcription/TranscriptionTab.tsx
 │       │   ├── speakers/SpeakersTab.tsx
-│       │   ├── SettingsTab.tsx
+│       │   ├── layout/SettingsTab.tsx
 │       │   └── ui/        # Reusable UI components
 │       └── lib/
 │           ├── api.ts     # API client
 │           └── utils.ts
-├── pipeline/               # Batch meeting-processing scripts (currently deferred; see PLAN.md)
 ├── docker-compose.yml      # GPU deployment
-├── docker-compose.debug.yml # CUDA debug env overrides (opt-in)
 └── docker-compose.cpu.yml  # CPU deployment
 ```
 
-**Current focus (see PLAN.md):** hardening the `api/` service for multi-client LAN use. All compute runs on this host's RTX 3090; former remote-GPU boxes (192.168.8.116/.147) are gone — never point config at them.
+**Scope (see PLAN.md):** this repo is the transcription + diarization service only — the `api/` backend and the `ui/` frontend (Transcription, Speakers, Settings). All compute runs on this host's RTX 3090; former remote-GPU boxes (192.168.8.116/.147) are gone — never point config at them. Batch meeting-processing/summarization tooling was removed in 2026-08 (recoverable from git history pre-`refocus-cleanup`); such tools should live outside this repo as API clients.
 
 ## Tech Stack
 
@@ -51,7 +49,7 @@ Guide for AI coding assistants working on this repository.
 - **wespeaker ResNet221-LM (ONNX)** - Speaker-ID embeddings (`data/models/wespeaker-resnet221/`). The diarization pipeline internally uses ResNet34 — same 256 dims, DIFFERENT embedding space; never mix vectors from the two in one collection.
 - **Qdrant** - Vector database for speaker embeddings
 - **PyTorch 2.8** + onnxruntime-gpu 1.22 (last CUDA 12.x build)
-- **ASR: Parakeet** (`nvidia/parakeet-tdt-0.6b-v3` via the parakeet.cpp compose service, port 8081). WAV-only and crashes on long inputs, so the api transcodes and chunks (WHISPER_SEND_WAV / WHISPER_CHUNK_SECONDS). Fallback: speaches container on host port 8000 with `Systran/faster-whisper-large-v3`.
+- **ASR: Parakeet** (`nvidia/parakeet-tdt-0.6b-v3` via parakeet.cpp, launched on demand by the host's llama-swap on port 9292 with a 300s TTL — entry in `~/sandbox/llama-swap/config.yaml`, model gguf cached in `data/models/parakeet/`). WAV-only and crashes on long inputs, so the api transcodes and chunks (WHISPER_SEND_WAV / WHISPER_CHUNK_SECONDS). Fallback: speaches container on host port 8000 with `Systran/faster-whisper-large-v3`.
 
 ### Frontend
 - **React 19** + **TypeScript 5**
@@ -172,5 +170,5 @@ docker compose build ui
 ### Modifying speaker database logic
 - All Qdrant operations in `api/services/speaker_db.py`
 - Collection: `speakers_resnet221` (set via `COLLECTION_NAME` in docker-compose.yml). Older collections `speaker_embeddings` / `work_speaker_embeddings` hold ResNet34-space vectors and are unused — do not point the api at them with the ResNet221 embedding model.
-- Re-enrollment after wiping: `python scripts/enroll_reference_speakers.py`
+- Enrollment: via the UI Speakers tab or `POST /speakers/register` / `POST /speakers/add-sample/{id}`
 - Payload fields: `speaker_id`, `speaker_name`, `created_at`, `audio_source`
