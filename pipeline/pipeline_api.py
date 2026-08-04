@@ -366,6 +366,8 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="Process at most N meetings (0=all)")
     parser.add_argument("--meeting", type=str, help="Process a specific meeting (substring of filename)")
     parser.add_argument("--force", action="store_true", help="Reprocess meetings already in the manifest")
+    parser.add_argument("--since", type=str, metavar="YYYY-MM-DD",
+                        help="Only meetings whose recording file date is on/after this day")
     parser.add_argument("--summarize", action="store_true",
                         help="Also produce LLM summaries (requires LLM_API_URL)")
     args = parser.parse_args()
@@ -391,6 +393,11 @@ def main():
     audio_files = [f for f in audio_files if f.stat().st_size >= MIN_FILE_SIZE]
     logger.info(f"After min-size filter: {len(audio_files)} files")
 
+    if args.since:
+        cutoff = datetime.strptime(args.since, "%Y-%m-%d").timestamp()
+        audio_files = [f for f in audio_files if os.path.getmtime(f) >= cutoff]
+        logger.info(f"After --since {args.since}: {len(audio_files)} files")
+
     if args.meeting:
         audio_files = [f for f in audio_files if args.meeting in f.name]
         if not audio_files:
@@ -404,6 +411,7 @@ def main():
     unload_llm()
 
     processed = failed = skipped = 0
+    retranscribed: set[str] = set()
     for audio_file in audio_files:
         if args.limit and processed + failed >= args.limit:
             break
@@ -422,6 +430,7 @@ def main():
             ok = False
         if ok:
             processed += 1
+            retranscribed.add(fhash)
         else:
             failed += 1
 
@@ -439,7 +448,11 @@ def main():
         for audio_file in audio_files:
             fhash = file_hash(str(audio_file))
             entry = manifest["meetings"].get(fhash, {})
-            if not entry.get("transcript_file") or entry.get("summary_file"):
+            if not entry.get("transcript_file"):
+                continue
+            # Keep existing summaries unless this run re-transcribed the
+            # meeting — a fresh transcript deserves a fresh summary
+            if entry.get("summary_file") and fhash not in retranscribed:
                 continue
             try:
                 ok = summarize_meeting(manifest, fhash)
