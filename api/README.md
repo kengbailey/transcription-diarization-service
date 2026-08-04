@@ -6,7 +6,7 @@ A production-ready REST API for speaker diarization, speaker identification, and
 
 | Component | Purpose |
 |-----------|---------|
-| **pyannote.audio 3.1** | Speaker diarization - identifies who spoke when |
+| **pyannote.audio 4.0** | Speaker diarization - identifies who spoke when |
 | **wespeaker** | Speaker embeddings - creates voice fingerprints |
 | **Qdrant** | Vector database - stores and matches speaker profiles |
 | **Whisper** | Speech-to-text transcription (external API) |
@@ -116,7 +116,7 @@ Environment variables for configuration:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HUGGINGFACE_TOKEN` | **Required** | HuggingFace API token |
-| `DIARIZATION_MODEL` | `pyannote/speaker-diarization-3.1` | Diarization model |
+| `DIARIZATION_MODEL` | `pyannote/speaker-diarization-3.1` | Diarization model (GPU compose deploys `pyannote/speaker-diarization-community-1`) |
 | `EMBEDDING_MODEL` | `pyannote/wespeaker-voxceleb-resnet34-LM` | Embedding model |
 | `DEVICE` | `auto` | Compute device: `auto`, `cuda`, or `cpu` |
 | `QDRANT_HOST` | `qdrant` | Qdrant server hostname |
@@ -180,5 +180,6 @@ docker compose up -d
 ## Model Licenses
 
 Before running, accept the HuggingFace model licenses:
-- https://huggingface.co/pyannote/speaker-diarization-3.1
+- https://huggingface.co/pyannote/speaker-diarization-community-1
+- https://huggingface.co/pyannote/speaker-diarization-3.1 (CPU compose)
 - https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM

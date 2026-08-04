@@ -6,7 +6,7 @@ import { Input, Label } from "@/components/ui/input"
 import { FileUpload } from "@/components/ui/file-upload"
 import { Spinner, LoadingOverlay } from "@/components/ui/spinner"
 import { transcribeIdentified, type TranscriptionResult, type TranscriptSegment } from "@/lib/api"
-import { cn, formatTime, formatDuration, getSpeakerColor } from "@/lib/utils"
+import { cn, copyToClipboard, formatTime, formatDuration, getSpeakerColor } from "@/lib/utils"
 
 export function TranscriptionTab() {
   const [audioFile, setAudioFile] = React.useState<File | null>(null)
@@ -42,20 +42,43 @@ export function TranscriptionTab() {
     }
   }, [audioFile])
 
+  // In-flight request, so the user can cancel a long transcription
+  const abortRef = React.useRef<AbortController | null>(null)
+
+  // Abort on unmount: tab switches unmount this component, and an orphaned
+  // request would silently hold the server's single GPU slot
+  React.useEffect(() => () => abortRef.current?.abort(), [])
+
   const handleTranscribe = async () => {
     if (!audioFile) return
-    
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
     try {
       setLoading(true)
       setError(null)
-      const speakers = numSpeakers ? parseInt(numSpeakers, 10) : undefined
-      const transcription = await transcribeIdentified(audioFile, speakers)
+      const parsed = parseInt(numSpeakers, 10)
+      const speakers = Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+      const transcription = await transcribeIdentified(audioFile, speakers, controller.signal)
+      // The result view mounts a fresh (paused) audio element
+      setIsPlaying(false)
+      setCurrentTime(0)
       setResult(transcription)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Transcription failed")
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError(null)
+      } else {
+        setError(err instanceof Error ? err.message : "Transcription failed")
+      }
     } finally {
+      abortRef.current = null
       setLoading(false)
     }
+  }
+
+  const handleCancel = () => {
+    abortRef.current?.abort()
   }
 
   const handlePlayPause = () => {
@@ -95,14 +118,18 @@ export function TranscriptionTab() {
 
   const handleCopyTranscript = async () => {
     if (!result) return
-    
+
     const text = result.segments
       .map(s => `[${s.identified_as || s.speaker}] ${s.text}`)
       .join("\n\n")
-    
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+
+    const ok = await copyToClipboard(text)
+    if (ok) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } else {
+      setError("Could not copy to clipboard")
+    }
   }
 
   const handleReset = () => {
@@ -142,7 +169,16 @@ export function TranscriptionTab() {
       {!result ? (
         /* Upload & Configure */
         <Card className="relative">
-          {loading && <LoadingOverlay message="Transcribing audio... This may take a few minutes." />}
+          {loading && (
+            <LoadingOverlay
+              message="Transcribing audio... This may take a few minutes."
+              action={
+                <Button variant="outline" size="sm" onClick={handleCancel}>
+                  Cancel
+                </Button>
+              }
+            />
+          )}
           <CardContent className="p-6 space-y-6">
             <div className="space-y-2">
               <Label>Audio File</Label>

@@ -27,20 +27,60 @@ services:
       
       # Model settings
       - DIARIZATION_MODEL=pyannote/speaker-diarization-community-1
-      - EMBEDDING_MODEL=pyannote/wespeaker-voxceleb-resnet34-LM
+      # Speaker-ID embedding: wespeaker ResNet221-LM (ONNX, Apache-2.0),
+      # ~30% lower verification EER than the ResNet34 the diarization
+      # pipeline uses internally. Same 256 dims, DIFFERENT space — vectors
+      # from the two models must never share a Qdrant collection.
+      - EMBEDDING_MODEL=/app/models/wespeaker-resnet221/voxceleb_resnet221_LM.onnx
       - MODEL_CACHE_DIR=/app/models
       
       # Qdrant connection
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
-      - COLLECTION_NAME=speaker_embeddings
-      
+      # Fresh collection for the ResNet221 embedding space (old ResNet34
+      # collections speaker_embeddings / work_speaker_embeddings remain on
+      # disk, unused)
+      - COLLECTION_NAME=speakers_resnet221
+
       # Processing settings
       - DEVICE=auto  # auto, cuda, or cpu
-      - SIMILARITY_THRESHOLD=0.7
-      
+      # Calibrated for ResNet221 against the enrolled roster (2026-08-03):
+      # worst cross-speaker score 0.583, genuine meeting matches 0.72-0.93
+      - SIMILARITY_THRESHOLD=0.65
+
+      # VRAM mitigations for pyannote-audio#1963 (multi-GB transient spike in
+      # the embedding stage on long files)
+      - EMBEDDING_BATCH_SIZE=16
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+      # Unload models after this many idle seconds so the GPU can be shared
+      # with llama-swap LLMs on this host; they reload lazily (~10-20s) on
+      # the next request. 0 = keep loaded forever.
+      - MODEL_IDLE_TIMEOUT=300
+
+      # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
+      - PYANNOTE_METRICS_ENABLED=false
+
+      # ASR: parakeet.cpp via the host's llama-swap (:9292), which starts the
+      # container on demand and unloads it after its TTL — no resident VRAM.
+      # WAV-only, so the api transcodes before upload.
+      - WHISPER_API_URL=http://host.docker.internal:9292/v1
+      - WHISPER_MODEL=parakeet-tdt-0.6b-v3
+      - WHISPER_SEND_WAV=true
+      - WHISPER_CHUNK_SECONDS=180  # parakeet.cpp attention memory grows ~quadratically; 3-min chunks need ~1.3GB vs ~14GB for 10-min
+      - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
+      # Whisper alternative (speaches container on the host):
+      # - WHISPER_API_URL=http://host.docker.internal:8000/v1
+      # - WHISPER_MODEL=Systran/faster-whisper-large-v3
+      # - WHISPER_SEND_WAV=false
+
       # API settings
       - UPLOAD_DIR=/app/uploads
+      # Optional shared secret for LAN clients (empty = auth disabled).
+      # Set API_KEY in .env; clients send "X-API-Key" or "Authorization: Bearer".
+      - API_KEY=${API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # Persist downloaded models
       - ./data/models:/app/models
@@ -57,9 +97,14 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
+  # NOTE: Parakeet ASR is no longer a compose service — it kept ~3.3 GB of
+  # VRAM resident. The host's llama-swap (config: ~/sandbox/llama-swap/
+  # config.yaml, entry "parakeet-tdt-0.6b-v3") now runs the same container
+  # on demand with a 300s TTL. Model gguf cache: ./data/models/parakeet/.
+
   # Qdrant Vector Database
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.3
     container_name: speaker-diarization-qdrant
     ports:
       - "6333:6333"  # REST API

@@ -2,6 +2,35 @@
 
 const API_BASE = '/api'
 
+// Optional shared secret, matching the server's API_KEY setting. Stored in
+// localStorage (set via the Settings tab); sent as X-API-Key when present.
+const API_KEY_STORAGE = 'diarization-api-key'
+
+export function getApiKey(): string {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE) || ''
+  } catch {
+    return ''
+  }
+}
+
+export function setApiKey(key: string): void {
+  try {
+    if (key) {
+      localStorage.setItem(API_KEY_STORAGE, key)
+    } else {
+      localStorage.removeItem(API_KEY_STORAGE)
+    }
+  } catch {
+    // storage unavailable (private mode etc.) — key just won't persist
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const key = getApiKey()
+  return key ? { 'X-API-Key': key } : {}
+}
+
 // Types matching the backend schemas
 export interface Speaker {
   speaker_id: string
@@ -20,6 +49,19 @@ export interface RegisterSpeakerResponse {
   speaker_name: string
   embeddings_count: number
   message: string
+}
+
+export interface SpeakerSample {
+  sample_id: string
+  audio_source: string
+  created_at: string
+}
+
+export interface SpeakerSamplesResponse {
+  speaker_id: string
+  speaker_name: string
+  samples: SpeakerSample[]
+  total_count: number
 }
 
 export interface TranscriptSegment {
@@ -49,12 +91,18 @@ export interface HealthResponse {
   models_loaded: boolean
   qdrant_connected: boolean
   device: string
+  gpu_memory_used_mb: number | null
+  gpu_memory_total_mb: number | null
+  jobs_queued: number | null
+  jobs_running: number | null
 }
 
 export interface StatsResponse {
   database: {
-    points_count: number
-    vectors_count: number
+    collection_name?: string
+    points_count?: number
+    status?: string
+    error?: string
   }
   speakers: {
     total_count: number
@@ -64,6 +112,12 @@ export interface StatsResponse {
     device: string
     diarization_model: string
     embedding_model: string
+    gpu_memory_used_mb: number | null
+    gpu_memory_total_mb: number | null
+  }
+  jobs?: {
+    queued: number
+    running: number
   }
 }
 
@@ -80,25 +134,30 @@ class ApiError extends Error {
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Unknown error' }))
-    throw new ApiError(response.status, error.detail || error.message || 'Request failed')
+    // FastAPI validation errors put an array of objects in `detail`
+    let message = error.detail || error.message || 'Request failed'
+    if (typeof message !== 'string') {
+      message = JSON.stringify(message)
+    }
+    throw new ApiError(response.status, message)
   }
   return response.json()
 }
 
 // Health & Stats
 export async function getHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${API_BASE}/health`)
+  const response = await fetch(`${API_BASE}/health`, { headers: authHeaders() })
   return handleResponse(response)
 }
 
 export async function getStats(): Promise<StatsResponse> {
-  const response = await fetch(`${API_BASE}/stats`)
+  const response = await fetch(`${API_BASE}/stats`, { headers: authHeaders() })
   return handleResponse(response)
 }
 
 // Speaker Management
 export async function getSpeakers(): Promise<SpeakerListResponse> {
-  const response = await fetch(`${API_BASE}/speakers`)
+  const response = await fetch(`${API_BASE}/speakers`, { headers: authHeaders() })
   return handleResponse(response)
 }
 
@@ -109,6 +168,7 @@ export async function registerSpeaker(name: string, audioFile: File): Promise<Re
   
   const response = await fetch(`${API_BASE}/speakers/register`, {
     method: 'POST',
+    headers: authHeaders(),
     body: formData,
   })
   return handleResponse(response)
@@ -120,6 +180,7 @@ export async function addSpeakerSample(speakerId: string, audioFile: File): Prom
   
   const response = await fetch(`${API_BASE}/speakers/add-sample/${speakerId}`, {
     method: 'POST',
+    headers: authHeaders(),
     body: formData,
   })
   return handleResponse(response)
@@ -128,6 +189,35 @@ export async function addSpeakerSample(speakerId: string, audioFile: File): Prom
 export async function deleteSpeaker(speakerId: string): Promise<void> {
   const response = await fetch(`${API_BASE}/speakers/${speakerId}`, {
     method: 'DELETE',
+    headers: authHeaders(),
+  })
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ message: 'Unknown error' }))
+    throw new ApiError(response.status, error.detail || error.message || 'Delete failed')
+  }
+}
+
+export async function updateSpeakerName(speakerId: string, speakerName: string): Promise<Speaker> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ speaker_name: speakerName }),
+  })
+  return handleResponse(response)
+}
+
+export async function getSpeakerSamples(speakerId: string): Promise<SpeakerSamplesResponse> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}/samples`, { headers: authHeaders() })
+  return handleResponse(response)
+}
+
+export async function deleteSpeakerSample(speakerId: string, sampleId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/speakers/${speakerId}/samples/${sampleId}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
   })
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Unknown error' }))
@@ -138,36 +228,21 @@ export async function deleteSpeaker(speakerId: string): Promise<void> {
 // Transcription
 export async function transcribeIdentified(
   audioFile: File,
-  numSpeakers?: number
+  numSpeakers?: number,
+  signal?: AbortSignal
 ): Promise<TranscriptionResult> {
   const formData = new FormData()
   formData.append('file', audioFile)
   if (numSpeakers !== undefined) {
     formData.append('num_speakers', numSpeakers.toString())
   }
-  
+
   const response = await fetch(`${API_BASE}/transcribe-identified`, {
     method: 'POST',
+    headers: authHeaders(),
     body: formData,
+    signal,
   })
   return handleResponse(response)
 }
 
-export async function transcribeDiarized(
-  audioFile: File,
-  numSpeakers?: number
-): Promise<TranscriptionResult> {
-  const formData = new FormData()
-  formData.append('file', audioFile)
-  if (numSpeakers !== undefined) {
-    formData.append('num_speakers', numSpeakers.toString())
-  }
-  
-  const response = await fetch(`${API_BASE}/transcribe-diarized`, {
-    method: 'POST',
-    body: formData,
-  })
-  return handleResponse(response)
-}
-
-export { ApiError }

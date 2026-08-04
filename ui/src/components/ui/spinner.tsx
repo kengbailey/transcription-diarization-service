@@ -1,3 +1,4 @@
+import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Loader2 } from "lucide-react"
 
@@ -20,13 +21,15 @@ export function Spinner({ className, size = "md" }: SpinnerProps) {
 
 interface LoadingOverlayProps {
   message?: string
+  action?: React.ReactNode
 }
 
-export function LoadingOverlay({ message = "Processing..." }: LoadingOverlayProps) {
+export function LoadingOverlay({ message = "Processing...", action }: LoadingOverlayProps) {
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/80 backdrop-blur-sm rounded-lg z-10">
       <Spinner size="lg" className="text-primary" />
       <p className="mt-3 text-sm text-muted-foreground">{message}</p>
+      {action && <div className="mt-4">{action}</div>}
     </div>
   )
 }

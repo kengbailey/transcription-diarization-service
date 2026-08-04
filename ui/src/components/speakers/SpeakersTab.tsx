@@ -1,12 +1,13 @@
 import * as React from "react"
-import { Plus, Users, Trash2, AudioLines, Calendar } from "lucide-react"
+import { Plus, Users, Trash2, AudioLines, Calendar, Pencil, ListMusic } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { Input, Label } from "@/components/ui/input"
 import { FileUpload } from "@/components/ui/file-upload"
+import { AudioTrimmer } from "@/components/ui/audio-trimmer"
 import { Spinner } from "@/components/ui/spinner"
-import { getSpeakers, registerSpeaker, addSpeakerSample, deleteSpeaker, type Speaker } from "@/lib/api"
+import { getSpeakers, registerSpeaker, addSpeakerSample, deleteSpeaker, updateSpeakerName, getSpeakerSamples, deleteSpeakerSample, type Speaker, type SpeakerSample } from "@/lib/api"
 import { getSpeakerColor } from "@/lib/utils"
 
 export function SpeakersTab() {
@@ -17,12 +18,14 @@ export function SpeakersTab() {
   // Add speaker dialog
   const [addDialogOpen, setAddDialogOpen] = React.useState(false)
   const [newSpeakerName, setNewSpeakerName] = React.useState("")
+  const [newSpeakerRawFile, setNewSpeakerRawFile] = React.useState<File | null>(null)
   const [newSpeakerFile, setNewSpeakerFile] = React.useState<File | null>(null)
   const [addingLoading, setAddingLoading] = React.useState(false)
-  
+
   // Add sample dialog
   const [sampleDialogOpen, setSampleDialogOpen] = React.useState(false)
   const [selectedSpeaker, setSelectedSpeaker] = React.useState<Speaker | null>(null)
+  const [sampleRawFile, setSampleRawFile] = React.useState<File | null>(null)
   const [sampleFile, setSampleFile] = React.useState<File | null>(null)
   const [sampleLoading, setSampleLoading] = React.useState(false)
   
@@ -30,6 +33,19 @@ export function SpeakersTab() {
   const [deleteDialogOpen, setDeleteDialogOpen] = React.useState(false)
   const [speakerToDelete, setSpeakerToDelete] = React.useState<Speaker | null>(null)
   const [deleteLoading, setDeleteLoading] = React.useState(false)
+
+  // Edit speaker name dialog
+  const [editDialogOpen, setEditDialogOpen] = React.useState(false)
+  const [speakerToEdit, setSpeakerToEdit] = React.useState<Speaker | null>(null)
+  const [editedName, setEditedName] = React.useState("")
+  const [editLoading, setEditLoading] = React.useState(false)
+
+  // Manage samples dialog
+  const [samplesDialogOpen, setSamplesDialogOpen] = React.useState(false)
+  const [speakerForSamples, setSpeakerForSamples] = React.useState<Speaker | null>(null)
+  const [samples, setSamples] = React.useState<SpeakerSample[]>([])
+  const [samplesLoading, setSamplesLoading] = React.useState(false)
+  const [deletingSampleId, setDeletingSampleId] = React.useState<string | null>(null)
 
   const loadSpeakers = React.useCallback(async () => {
     try {
@@ -50,12 +66,13 @@ export function SpeakersTab() {
 
   const handleAddSpeaker = async () => {
     if (!newSpeakerName.trim() || !newSpeakerFile) return
-    
+
     try {
       setAddingLoading(true)
       await registerSpeaker(newSpeakerName.trim(), newSpeakerFile)
       setAddDialogOpen(false)
       setNewSpeakerName("")
+      setNewSpeakerRawFile(null)
       setNewSpeakerFile(null)
       loadSpeakers()
     } catch (err) {
@@ -67,12 +84,13 @@ export function SpeakersTab() {
 
   const handleAddSample = async () => {
     if (!selectedSpeaker || !sampleFile) return
-    
+
     try {
       setSampleLoading(true)
       await addSpeakerSample(selectedSpeaker.speaker_id, sampleFile)
       setSampleDialogOpen(false)
       setSelectedSpeaker(null)
+      setSampleRawFile(null)
       setSampleFile(null)
       loadSpeakers()
     } catch (err) {
@@ -80,6 +98,16 @@ export function SpeakersTab() {
     } finally {
       setSampleLoading(false)
     }
+  }
+
+  const handleNewSpeakerFileChange = (file: File | null) => {
+    setNewSpeakerRawFile(file)
+    setNewSpeakerFile(null) // Reset trimmed file when raw file changes
+  }
+
+  const handleSampleFileChange = (file: File | null) => {
+    setSampleRawFile(file)
+    setSampleFile(null) // Reset trimmed file when raw file changes
   }
 
   const handleDeleteSpeaker = async () => {
@@ -106,6 +134,91 @@ export function SpeakersTab() {
   const openDeleteDialog = (speaker: Speaker) => {
     setSpeakerToDelete(speaker)
     setDeleteDialogOpen(true)
+  }
+
+  const openEditDialog = (speaker: Speaker) => {
+    setSpeakerToEdit(speaker)
+    setEditedName(speaker.speaker_name)
+    setEditDialogOpen(true)
+  }
+
+  const handleEditSpeaker = async () => {
+    if (!speakerToEdit || !editedName.trim()) return
+
+    try {
+      setEditLoading(true)
+      await updateSpeakerName(speakerToEdit.speaker_id, editedName.trim())
+      setEditDialogOpen(false)
+      setSpeakerToEdit(null)
+      setEditedName("")
+      loadSpeakers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update speaker name")
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  // Guards against a slow response for speaker A landing after the user
+  // already opened speaker B's dialog
+  const samplesRequestRef = React.useRef<string | null>(null)
+
+  const openSamplesDialog = async (speaker: Speaker) => {
+    setSpeakerForSamples(speaker)
+    setSamplesDialogOpen(true)
+    setSamplesLoading(true)
+    setSamples([])
+    samplesRequestRef.current = speaker.speaker_id
+
+    try {
+      const response = await getSpeakerSamples(speaker.speaker_id)
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setSamples(response.samples)
+      }
+    } catch (err) {
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setError(err instanceof Error ? err.message : "Failed to load samples")
+        setSamplesDialogOpen(false)
+      }
+    } finally {
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setSamplesLoading(false)
+      }
+    }
+  }
+
+  const handleDeleteSample = async (sampleId: string) => {
+    if (!speakerForSamples) return
+
+    try {
+      setDeletingSampleId(sampleId)
+      await deleteSpeakerSample(speakerForSamples.speaker_id, sampleId)
+      // Remove from local state
+      setSamples(prev => prev.filter(s => s.sample_id !== sampleId))
+      // Reload speakers to update count
+      loadSpeakers()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete sample")
+    } finally {
+      setDeletingSampleId(null)
+    }
+  }
+
+  // Single close path for each dialog so Cancel, the X button, Escape, and
+  // backdrop clicks all clear the form — leftover state from a cancelled
+  // dialog could silently register the wrong audio under the wrong name
+  const closeAddDialog = () => {
+    setAddDialogOpen(false)
+    setNewSpeakerName("")
+    setNewSpeakerRawFile(null)
+    setNewSpeakerFile(null)
+  }
+
+  const closeSampleDialog = () => {
+    setSampleDialogOpen(false)
+    setSelectedSpeaker(null)
+    setSampleRawFile(null)
+    setSampleFile(null)
   }
 
   const formatDate = (dateString: string) => {
@@ -142,13 +255,17 @@ export function SpeakersTab() {
 
       {/* Error message */}
       {error && (
-        <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive">
-          {error}
+        <div className="flex items-center justify-between p-4 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive">
+          <span>{error}</span>
+          <Button variant="outline" size="sm" onClick={() => { setError(null); loadSpeakers() }}>
+            Retry
+          </Button>
         </div>
       )}
 
-      {/* Speaker grid */}
-      {speakers.length === 0 ? (
+      {/* Speaker grid (suppress the empty-state card when the load failed —
+          zero speakers and "couldn't fetch speakers" are different states) */}
+      {speakers.length === 0 && !error ? (
         <Card className="p-12">
           <div className="flex flex-col items-center justify-center text-center">
             <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center mb-4">
@@ -173,40 +290,56 @@ export function SpeakersTab() {
                 <div className={`h-2 ${color.bg.replace('/20', '')}`} />
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${color.bg} ${color.text}`}>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className={`w-10 h-10 shrink-0 rounded-full flex items-center justify-center ${color.bg} ${color.text}`}>
                         <span className="font-semibold text-sm">
                           {speaker.speaker_name.slice(0, 2).toUpperCase()}
                         </span>
                       </div>
-                      <div>
-                        <h3 className="font-semibold">{speaker.speaker_name}</h3>
+                      <div className="min-w-0">
+                        <h3 className="font-semibold truncate" title={speaker.speaker_name}>{speaker.speaker_name}</h3>
                         <p className="text-xs text-muted-foreground">
                           ID: {speaker.speaker_id.slice(0, 8)}...
                         </p>
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="text-muted-foreground hover:text-destructive"
-                      onClick={() => openDeleteDialog(speaker)}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-primary"
+                        onClick={() => openEditDialog(speaker)}
+                        title="Edit name"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => openDeleteDialog(speaker)}
+                        title="Delete speaker"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
-                  
+
                   <div className="space-y-2 text-sm text-muted-foreground mb-4">
-                    <div className="flex items-center gap-2">
+                    <button
+                      className="flex items-center gap-2 hover:text-primary transition-colors cursor-pointer"
+                      onClick={() => openSamplesDialog(speaker)}
+                    >
                       <AudioLines className="w-4 h-4" />
                       <span>{speaker.embeddings_count} voice sample{speaker.embeddings_count !== 1 ? "s" : ""}</span>
-                    </div>
+                      <ListMusic className="w-3 h-3 ml-1" />
+                    </button>
                     <div className="flex items-center gap-2">
                       <Calendar className="w-4 h-4" />
                       <span>Added {formatDate(speaker.created_at)}</span>
                     </div>
                   </div>
-                  
+
                   <Button
                     variant="outline"
                     className="w-full"
@@ -223,15 +356,15 @@ export function SpeakersTab() {
       )}
 
       {/* Add Speaker Dialog */}
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent onClose={() => setAddDialogOpen(false)}>
+      <Dialog open={addDialogOpen} onOpenChange={(open) => { if (!open) closeAddDialog() }}>
+        <DialogContent onClose={closeAddDialog} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add New Speaker</DialogTitle>
             <DialogDescription>
-              Register a new speaker by providing their name and a voice sample.
+              Register a new speaker by providing their name and a voice sample (max 30 seconds).
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="speaker-name">Speaker Name</Label>
@@ -243,24 +376,49 @@ export function SpeakersTab() {
                 disabled={addingLoading}
               />
             </div>
-            
+
             <div className="space-y-2">
               <Label>Voice Sample</Label>
-              <FileUpload
-                value={newSpeakerFile}
-                onChange={setNewSpeakerFile}
-                disabled={addingLoading}
-              />
+              {!newSpeakerRawFile ? (
+                <FileUpload
+                  value={newSpeakerRawFile}
+                  onChange={handleNewSpeakerFileChange}
+                  disabled={addingLoading}
+                />
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground truncate">{newSpeakerRawFile.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleNewSpeakerFileChange(null)}
+                      disabled={addingLoading}
+                    >
+                      Change file
+                    </Button>
+                  </div>
+                  <AudioTrimmer
+                    file={newSpeakerRawFile}
+                    onTrimmedAudio={setNewSpeakerFile}
+                  />
+                  {newSpeakerFile && (
+                    <p className="text-xs text-green-600">
+                      Audio segment ready: {newSpeakerFile.name}
+                    </p>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
-                Upload a clear audio recording of the speaker (10-30 seconds works best).
+                Upload audio and select a segment (10-30 seconds works best).
               </p>
             </div>
           </div>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setAddDialogOpen(false)}
+              onClick={closeAddDialog}
               disabled={addingLoading}
             >
               Cancel
@@ -277,30 +435,55 @@ export function SpeakersTab() {
       </Dialog>
 
       {/* Add Sample Dialog */}
-      <Dialog open={sampleDialogOpen} onOpenChange={setSampleDialogOpen}>
-        <DialogContent onClose={() => setSampleDialogOpen(false)}>
+      <Dialog open={sampleDialogOpen} onOpenChange={(open) => { if (!open) closeSampleDialog() }}>
+        <DialogContent onClose={closeSampleDialog} className="max-w-2xl">
           <DialogHeader>
             <DialogTitle>Add Voice Sample</DialogTitle>
             <DialogDescription>
-              Add another voice sample for {selectedSpeaker?.speaker_name} to improve recognition accuracy.
+              Add another voice sample for {selectedSpeaker?.speaker_name} to improve recognition accuracy (max 30 seconds).
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="space-y-4 py-4">
-            <FileUpload
-              value={sampleFile}
-              onChange={setSampleFile}
-              disabled={sampleLoading}
-            />
+            {!sampleRawFile ? (
+              <FileUpload
+                value={sampleRawFile}
+                onChange={handleSampleFileChange}
+                disabled={sampleLoading}
+              />
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground truncate">{sampleRawFile.name}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleSampleFileChange(null)}
+                    disabled={sampleLoading}
+                  >
+                    Change file
+                  </Button>
+                </div>
+                <AudioTrimmer
+                  file={sampleRawFile}
+                  onTrimmedAudio={setSampleFile}
+                />
+                {sampleFile && (
+                  <p className="text-xs text-green-600">
+                    Audio segment ready: {sampleFile.name}
+                  </p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-muted-foreground">
-              Adding more samples helps improve speaker identification accuracy.
+              Upload audio and select a segment (10-30 seconds works best).
             </p>
           </div>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => setSampleDialogOpen(false)}
+              onClick={closeSampleDialog}
               disabled={sampleLoading}
             >
               Cancel
@@ -325,7 +508,7 @@ export function SpeakersTab() {
               Are you sure you want to delete {speakerToDelete?.speaker_name}? This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
-          
+
           <DialogFooter>
             <Button
               variant="outline"
@@ -341,6 +524,121 @@ export function SpeakersTab() {
             >
               {deleteLoading && <Spinner size="sm" className="mr-2" />}
               Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Speaker Name Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent onClose={() => setEditDialogOpen(false)}>
+          <DialogHeader>
+            <DialogTitle>Edit Speaker Name</DialogTitle>
+            <DialogDescription>
+              Update the name for this speaker.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-speaker-name">Speaker Name</Label>
+              <Input
+                id="edit-speaker-name"
+                placeholder="e.g., John Doe"
+                value={editedName}
+                onChange={(e) => setEditedName(e.target.value)}
+                disabled={editLoading}
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEditDialogOpen(false)}
+              disabled={editLoading}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleEditSpeaker}
+              disabled={!editedName.trim() || editedName === speakerToEdit?.speaker_name || editLoading}
+            >
+              {editLoading && <Spinner size="sm" className="mr-2" />}
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manage Samples Dialog */}
+      <Dialog open={samplesDialogOpen} onOpenChange={setSamplesDialogOpen}>
+        <DialogContent onClose={() => setSamplesDialogOpen(false)} className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Voice Samples</DialogTitle>
+            <DialogDescription>
+              Manage voice samples for {speakerForSamples?.speaker_name}.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            {samplesLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Spinner size="lg" />
+              </div>
+            ) : samples.length === 0 ? (
+              <p className="text-center text-muted-foreground py-4">No samples found</p>
+            ) : (
+              <div className="space-y-2 max-h-[300px] overflow-y-auto">
+                {samples.map((sample, index) => (
+                  <div
+                    key={sample.sample_id}
+                    className="flex items-center justify-between p-3 rounded-lg border bg-card"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
+                        <AudioLines className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          Sample {index + 1}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {sample.audio_source !== "unknown" ? sample.audio_source : formatDate(sample.created_at)}
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="text-muted-foreground hover:text-destructive flex-shrink-0"
+                      onClick={() => handleDeleteSample(sample.sample_id)}
+                      disabled={deletingSampleId === sample.sample_id || samples.length <= 1}
+                      title={samples.length <= 1 ? "Cannot delete the last sample" : "Delete sample"}
+                    >
+                      {deletingSampleId === sample.sample_id ? (
+                        <Spinner size="sm" />
+                      ) : (
+                        <Trash2 className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {samples.length === 1 && (
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                Cannot delete the last sample. Delete the speaker instead.
+              </p>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setSamplesDialogOpen(false)}
+            >
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

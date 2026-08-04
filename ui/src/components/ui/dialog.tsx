@@ -20,6 +20,15 @@ const Dialog: React.FC<DialogProps> = ({ open, onOpenChange, children }) => {
     }
   }, [open])
 
+  React.useEffect(() => {
+    if (!open) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onOpenChange(false)
+    }
+    document.addEventListener("keydown", onKeyDown)
+    return () => document.removeEventListener("keydown", onKeyDown)
+  }, [open, onOpenChange])
+
   if (!open) return null
 
   return (
@@ -38,11 +47,21 @@ const Dialog: React.FC<DialogProps> = ({ open, onOpenChange, children }) => {
 const DialogContent = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & { onClose?: () => void }
->(({ className, children, onClose, ...props }, ref) => (
+>(({ className, children, onClose, ...props }, ref) => {
+  const localRef = React.useRef<HTMLDivElement>(null)
+  React.useImperativeHandle(ref, () => localRef.current as HTMLDivElement)
+  // Move focus into the dialog so keyboard/screen-reader users land in it
+  React.useEffect(() => {
+    localRef.current?.focus()
+  }, [])
+  return (
   <div
-    ref={ref}
+    ref={localRef}
+    role="dialog"
+    aria-modal="true"
+    tabIndex={-1}
     className={cn(
-      "relative z-50 w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg",
+      "relative z-50 w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg focus:outline-none",
       className
     )}
     onClick={(e) => e.stopPropagation()}
@@ -59,7 +78,8 @@ const DialogContent = React.forwardRef<
     )}
     {children}
   </div>
-))
+  )
+})
 DialogContent.displayName = "DialogContent"
 
 const DialogHeader = ({

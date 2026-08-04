@@ -81,6 +81,8 @@ speaker_diarization/
 │   ├── src/                # React components
 │   └── README.md           # UI documentation
 │
+├── pipeline/               # Batch meeting-processing scripts (see PLAN.md)
+│
 ├── data/                   # Persistent storage
 │   ├── models/             # Cached ML models
 │   ├── qdrant/             # Vector database
@@ -100,7 +102,7 @@ speaker_diarization/
 ## 🛠️ Tech Stack
 
 ### API
-- **pyannote.audio 3.1** - State-of-the-art speaker diarization
+- **pyannote.audio 4.0** - State-of-the-art speaker diarization (`community-1` model on GPU, `3.1` on the CPU compose)
 - **wespeaker** - Speaker embedding extraction
 - **Qdrant** - Vector database for speaker matching
 - **Whisper** - Speech-to-text transcription
@@ -163,7 +165,8 @@ See [API README](./api/README.md) for full configuration options.
 ## 📋 Model Licenses
 
 Accept these HuggingFace model agreements before running:
-- [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+- [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1)
+- [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) (CPU compose)
 - [pyannote/wespeaker-voxceleb-resnet34-LM](https://huggingface.co/pyannote/wespeaker-voxceleb-resnet34-LM)
 
 ## 🤝 Contributing

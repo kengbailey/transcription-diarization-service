@@ -20,6 +20,32 @@ export function formatDuration(seconds: number): string {
   return `${mins}m ${secs}s`
 }
 
+export async function copyToClipboard(text: string): Promise<boolean> {
+  // navigator.clipboard only exists in secure contexts (https or localhost);
+  // LAN clients on plain http need the execCommand fallback.
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to the legacy path
+    }
+  }
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.style.position = "fixed"
+  textarea.style.opacity = "0"
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    return document.execCommand("copy")
+  } catch {
+    return false
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
 // Speaker colors for visual distinction
 export const SPEAKER_COLORS = [
   { bg: 'bg-blue-500/20', text: 'text-blue-400', border: 'border-blue-500/50', solid: '#3b82f6' },
