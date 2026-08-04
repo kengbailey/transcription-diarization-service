@@ -102,7 +102,11 @@ From the web-verified research (all claims checked against PyPI/GitHub/HF primar
 
 ## Phase 4 — Rationalize `pipeline/` (after Phase 2) — core done 2026-08-04 (commit 8381a62)
 
-> `pipeline/pipeline_api.py` replaces the Speaches-based pipeline: env-configured, submits to the api's job queue, writes meeting_server.py-compatible output (verified). The >15MB skip regression is gone — 51 of 58 untranscribed meetings were blocked by it; one was processed as proof (3.7 min, 2/2 speakers named). **Remaining:** run the backlog of 58 meetings (est. ~6–10 h of queue time, resumable — just rerun the script); stand up a local LLM (Ollama + gpt-oss-20b or Qwen3-30B-A3B fits alongside the stack) and set `LLM_API_URL` for summaries; superseded scripts (`pipeline_speaches.py`, `process_meetings.py`, `transcribe_and_summarize.py`, `cluster_speakers.py`, `server.py`, `migrate_speakers.py`) stay frozen in-tree.
+> `pipeline/pipeline_api.py` replaces the Speaches-based pipeline: env-configured, submits to the api's job queue, writes meeting_server.py-compatible output (verified). The >15MB skip regression is gone — 51 of 58 untranscribed meetings were blocked by it; one was processed as proof (3.7 min, 2/2 speakers named). Superseded scripts stay frozen in-tree.
+>
+> **Summaries + single-box VRAM choreography (2026-08-04, commits 3c46a15, 31df076):** summaries run on the host's llama-swap (`qwen3.6-35b`, MoE — 7.2 GB VRAM with experts on CPU; its entry needed `${32k-context}` added to `~/sandbox/llama-swap/config.yaml` for transcript-sized prompts). The api gained `MODEL_IDLE_TIMEOUT` (300s in compose): a reaper unloads diarization/embedding models after idle, dropping the device from ~13.6 GB post-job to ~4 GB, with zero measured reload penalty on the next request. The pipeline is two-phase (transcribe all → summarize all) and calls llama-swap's `/unload` before phase 1, so the LLM and diarization never collide. Verified end-to-end with a real qwen summary (structured, 64s). parakeet.cpp has no idle-unload flag and stays resident (~3.3 GB) — acceptable; revisit if VRAM gets tight.
+>
+> **Remaining:** run the backlog (`pipeline/pipeline_api.py --summarize`, resumable).
 
 `pipeline_speaches.py` is the active batch pipeline; `meeting_server.py` is the daily-use product. Superseded once-only tools (`process_meetings.py`, `cluster_speakers.py`, `server.py`, `migrate_speakers.py`) stay in-tree but frozen.
 
