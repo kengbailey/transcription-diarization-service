@@ -61,10 +61,11 @@ services:
       # Disable pyannote 4.x usage telemetry (OTLP to otel.pyannote.ai)
       - PYANNOTE_METRICS_ENABLED=false
 
-      # ASR: parakeet.cpp service below (~360x real-time on the 3090, native
-      # word timestamps). WAV-only, so the api transcodes before upload.
-      - WHISPER_API_URL=http://parakeet:8080/v1
-      - WHISPER_MODEL=tdt-0.6b-v3
+      # ASR: parakeet.cpp via the host's llama-swap (:9292), which starts the
+      # container on demand and unloads it after its TTL — no resident VRAM.
+      # WAV-only, so the api transcodes before upload.
+      - WHISPER_API_URL=http://host.docker.internal:9292/v1
+      - WHISPER_MODEL=parakeet-tdt-0.6b-v3
       - WHISPER_SEND_WAV=true
       - WHISPER_CHUNK_SECONDS=180  # parakeet.cpp attention memory grows ~quadratically; 3-min chunks need ~1.3GB vs ~14GB for 10-min
       - WHISPER_TIMEOUT=1800  # multi-hour meetings exceed the 300s default
@@ -87,7 +88,6 @@ services:
       - ./data/uploads:/app/uploads
     depends_on:
       - qdrant
-      - parakeet
     deploy:
       resources:
         reservations:
@@ -97,25 +97,10 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
 
-  # Parakeet ASR (nvidia/parakeet-tdt-0.6b-v3 via parakeet.cpp).
-  # Single-model, one-request-at-a-time — fine, the api serializes GPU work.
-  parakeet:
-    image: ghcr.io/mudler/parakeet.cpp-server:latest-cuda
-    container_name: speaker-diarization-parakeet
-    command: ["--model", "tdt-0.6b-v3"]
-    ports:
-      - "8081:8080"
-    volumes:
-      # Model cache (~1.4 GB gguf, downloaded on first start if absent)
-      - ./data/models/parakeet:/root/.cache/parakeet.cpp
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
+  # NOTE: Parakeet ASR is no longer a compose service — it kept ~3.3 GB of
+  # VRAM resident. The host's llama-swap (config: ~/sandbox/llama-swap/
+  # config.yaml, entry "parakeet-tdt-0.6b-v3") now runs the same container
+  # on demand with a 300s TTL. Model gguf cache: ./data/models/parakeet/.
 
   # Qdrant Vector Database
   qdrant:
