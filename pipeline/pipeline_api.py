@@ -43,8 +43,10 @@ AUDIO_DIR = Path(os.environ.get(
     "/home/syran/tmp/mtgs/Users/kenbailey/Library/Application Support/com.taperlabs.shadow",
 ))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(__file__).resolve().parent / "output")))
-LLM_API_URL = os.environ.get("LLM_API_URL", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-oss-20b")
+# llama-swap on this host; it loads the model on demand and unloads it after
+# its own TTL. Set LLM_API_URL="" to disable summarization entirely.
+LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:9292/v1")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3.6-35b")
 
 TRANSCRIPTS_DIR = OUTPUT_DIR / "transcripts"
 SUMMARIES_DIR = OUTPUT_DIR / "summaries"
@@ -182,6 +184,22 @@ def format_transcript_md(segments: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 # LLM summarization (optional)
 # ---------------------------------------------------------------------------
+def unload_llm() -> None:
+    """Ask llama-swap to unload its models before GPU-heavy transcription.
+
+    Diarization peaks at 10-16 GB; a resident LLM would collide. Best-effort —
+    other OpenAI-compatible servers simply 404 this.
+    """
+    if not LLM_API_URL:
+        return
+    base = LLM_API_URL.rsplit("/v1", 1)[0]
+    try:
+        httpx.get(f"{base}/unload", timeout=10)
+        logger.info("Asked llama-swap to unload LLM models")
+    except Exception:
+        pass
+
+
 def summarize_transcript(transcript_text: str) -> str | None:
     max_chars = 80_000
     if len(transcript_text) > max_chars:
@@ -230,7 +248,6 @@ def process_meeting(
     client: httpx.Client,
     audio_path: Path,
     manifest: dict,
-    summarize: bool,
 ) -> bool:
     fhash = file_hash(str(audio_path))
     meeting_id = audio_path.name.replace("-MergedAudio.m4a", "")[:16]
@@ -273,20 +290,6 @@ def process_meeting(
         f"{result.get('num_identified', 0)}/{result.get('num_speakers', 0)} speakers identified"
     )
 
-    # Summarize (optional)
-    summary_text = None
-    summary_path = SUMMARIES_DIR / f"{meeting_id}_summary.md"
-    if not summarize:
-        pass
-    elif len(transcript_md.strip()) < 100:
-        logger.info("  Transcript too short for summarization")
-    else:
-        logger.info(f"  Summarizing with {LLM_MODEL}...")
-        summary_text = summarize_transcript(transcript_md)
-        if summary_text:
-            summary_path.write_text(summary_text)
-            logger.info(f"  Summary saved ({len(summary_text)} chars)")
-
     # Update manifest
     speakers_in_meeting: dict[str, dict] = {}
     for seg in merged:
@@ -312,12 +315,46 @@ def process_meeting(
         "transcript_segments": len(merged),
         "transcribed_at": datetime.now().isoformat(),
     })
-    if summary_text:
-        meeting_data["summary_file"] = str(summary_path)
-        meeting_data["summarized_at"] = datetime.now().isoformat()
 
     manifest["meetings"][fhash] = meeting_data
     save_manifest(manifest)
+    return True
+
+
+def summarize_meeting(manifest: dict, fhash: str) -> bool:
+    """Summarize an already-transcribed meeting from its transcript file."""
+    entry = manifest["meetings"][fhash]
+    meeting_id = entry.get("meeting_id", fhash)
+
+    transcript_ref = entry.get("transcript_file")
+    if not transcript_ref:
+        return False
+    transcript_path = Path(transcript_ref)
+    if not transcript_path.is_absolute():
+        # Older manifest entries stored paths relative to the pipeline dir
+        transcript_path = OUTPUT_DIR.parent / transcript_path
+    if not transcript_path.exists():
+        logger.warning(f"  Transcript file missing: {transcript_path}")
+        return False
+
+    transcript_md = transcript_path.read_text()
+    if len(transcript_md.strip()) < 100:
+        logger.info(f"  {meeting_id}: transcript too short for summarization")
+        entry["summary_file"] = "too_short"
+        save_manifest(manifest)
+        return True
+
+    logger.info(f"  {meeting_id}: summarizing with {LLM_MODEL}...")
+    summary_text = summarize_transcript(transcript_md)
+    if not summary_text:
+        return False
+
+    summary_path = SUMMARIES_DIR / f"{meeting_id}_summary.md"
+    summary_path.write_text(summary_text)
+    entry["summary_file"] = str(summary_path)
+    entry["summarized_at"] = datetime.now().isoformat()
+    save_manifest(manifest)
+    logger.info(f"  {meeting_id}: summary saved ({len(summary_text)} chars)")
     return True
 
 
@@ -360,8 +397,14 @@ def main():
             logger.error(f"Meeting not found: {args.meeting}")
             return 1
 
+    # -----------------------------------------------------------------
+    # Phase 1: transcribe. The LLM is unloaded first — diarization peaks
+    # at 10-16 GB of VRAM and would collide with a resident model.
+    # -----------------------------------------------------------------
+    unload_llm()
+
     processed = failed = skipped = 0
-    for i, audio_file in enumerate(audio_files):
+    for audio_file in audio_files:
         if args.limit and processed + failed >= args.limit:
             break
 
@@ -373,7 +416,7 @@ def main():
 
         logger.info(f"\n[{processed + failed + 1}] {audio_file.name}")
         try:
-            ok = process_meeting(client, audio_file, manifest, summarize)
+            ok = process_meeting(client, audio_file, manifest)
         except Exception:
             logger.exception("  Unexpected failure")
             ok = False
@@ -383,8 +426,33 @@ def main():
             failed += 1
 
     logger.info(f"\n{'=' * 50}")
-    logger.info(f"Done! Processed: {processed}, Skipped (already done): {skipped}, Failed: {failed}")
-    return 0 if failed == 0 else 2
+    logger.info(f"Transcription: {processed} processed, {skipped} already done, {failed} failed")
+
+    # -----------------------------------------------------------------
+    # Phase 2: summarize everything that has a transcript but no summary.
+    # Running as a separate pass means the LLM loads once instead of
+    # swapping in and out per meeting; meanwhile the api's idle timeout
+    # frees the diarization models.
+    # -----------------------------------------------------------------
+    summarized = sum_failed = 0
+    if summarize:
+        for audio_file in audio_files:
+            fhash = file_hash(str(audio_file))
+            entry = manifest["meetings"].get(fhash, {})
+            if not entry.get("transcript_file") or entry.get("summary_file"):
+                continue
+            try:
+                ok = summarize_meeting(manifest, fhash)
+            except Exception:
+                logger.exception("  Summarization failure")
+                ok = False
+            if ok:
+                summarized += 1
+            else:
+                sum_failed += 1
+        logger.info(f"Summaries: {summarized} written, {sum_failed} failed")
+
+    return 0 if failed == 0 and sum_failed == 0 else 2
 
 
 if __name__ == "__main__":
