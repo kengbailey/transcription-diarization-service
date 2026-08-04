@@ -67,7 +67,15 @@ The audit's most important architectural finding: **every endpoint is `async def
    - Transcript copy uses `navigator.clipboard`, which is unavailable on plain `http://<lan-ip>` (non-secure context) — add a fallback or serve HTTPS.
    - Add a cancel (`AbortController`) for in-flight transcriptions.
 
-## Phase 3 — Model upgrades (evaluate, ~1 week elapsed)
+## Phase 3 — Model upgrades (evaluate, ~1 week elapsed) — ✅ done 2026-08-03 (commits 347a652, 6fe6ecd)
+
+> **ASR step 1 done:** speaches switched to full `faster-whisper-large-v3` (136s for the 16-min meeting, +9% vs distil, better word alignment, multilingual). Kept as the documented fallback.
+>
+> **ASR step 2 done and promoted to default:** `parakeet-tdt-0.6b-v3` via a `parakeet` compose service (parakeet.cpp CUDA). Measured on the 3090: 16.2 min of audio transcribed in **2.7s** (~360× real-time) with native word timestamps and properly punctuated text. End-to-end transcribe-identified: **91s** (was 136s whisper-large-v3 / 125s distil), identical 5/5 speaker identification. WAV-only limitation handled by an opt-in transcode step (`WHISPER_SEND_WAV`); model gguf cached in `data/models/parakeet/`.
+>
+> **Embedding upgrade done after all (commits b24b6e2, 1648b23):** speaker-ID moved to wespeaker ResNet221-LM (ONNX) with a fresh `speakers_resnet221` collection; 31 speakers re-enrolled from reference clips via `scripts/enroll_reference_speakers.py`. Identification now builds one embedding per speaker from ≤60s of their longest segments (waveform passed through from diarization — no re-decode, ~2s overhead). Threshold recalibrated to 0.65 from measured scores (worst impostor 0.583, genuine 0.72–0.93). Meetings now come back with real names: Andy/Davide/Jason/Ken/Mat at 0.72–0.93 confidence. Enrollment depth is thin (1 clip for most speakers; Ken's two clips only score 0.43 against each other) — adding more samples per speaker via the UI is the cheapest future accuracy win.
+>
+> Also fixed en route: parakeet.cpp hard-crashes on long inputs (attention memory ~quadratic; a 10-min chunk wants ~14 GB) — the api now chunks WAV uploads at 180s and re-offsets timestamps on merge.
 
 From the web-verified research (all claims checked against PyPI/GitHub/HF primary sources):
 

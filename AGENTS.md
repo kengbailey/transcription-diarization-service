@@ -48,10 +48,10 @@ Guide for AI coding assistants working on this repository.
 ### Backend
 - **FastAPI** - REST API framework
 - **pyannote.audio 4.0** - Speaker diarization (GPU compose: `pyannote/speaker-diarization-community-1`; CPU compose: `pyannote/speaker-diarization-3.1`)
-- **wespeaker** - Speaker embeddings (model: `pyannote/wespeaker-voxceleb-resnet34-LM`)
+- **wespeaker ResNet221-LM (ONNX)** - Speaker-ID embeddings (`data/models/wespeaker-resnet221/`). The diarization pipeline internally uses ResNet34 — same 256 dims, DIFFERENT embedding space; never mix vectors from the two in one collection.
 - **Qdrant** - Vector database for speaker embeddings
-- **PyTorch 2.8** - ML framework (CUDA or CPU)
-- **Whisper** - via an external OpenAI-compatible server (speaches container on the host, port 8000; reached from Docker as `host.docker.internal:8000`)
+- **PyTorch 2.8** + onnxruntime-gpu 1.22 (last CUDA 12.x build)
+- **ASR: Parakeet** (`nvidia/parakeet-tdt-0.6b-v3` via the parakeet.cpp compose service, port 8081). WAV-only and crashes on long inputs, so the api transcodes and chunks (WHISPER_SEND_WAV / WHISPER_CHUNK_SECONDS). Fallback: speaches container on host port 8000 with `Systran/faster-whisper-large-v3`.
 
 ### Frontend
 - **React 19** + **TypeScript 5**
@@ -171,5 +171,6 @@ docker compose build ui
 
 ### Modifying speaker database logic
 - All Qdrant operations in `api/services/speaker_db.py`
-- Collection: `work_speaker_embeddings` (set via `COLLECTION_NAME` in docker-compose.yml; the older `speaker_embeddings` collection still exists on disk with pre-Jan-2026 enrollments)
+- Collection: `speakers_resnet221` (set via `COLLECTION_NAME` in docker-compose.yml). Older collections `speaker_embeddings` / `work_speaker_embeddings` hold ResNet34-space vectors and are unused — do not point the api at them with the ResNet221 embedding model.
+- Re-enrollment after wiping: `python scripts/enroll_reference_speakers.py`
 - Payload fields: `speaker_id`, `speaker_name`, `created_at`, `audio_source`
