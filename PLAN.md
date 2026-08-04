@@ -112,7 +112,9 @@ From the web-verified research (all claims checked against PyPI/GitHub/HF primar
 4. Resolve the unexplained LLM downgrade (`gpt-oss-120b` → `gpt-oss-20b` in the newest script) — if it was VRAM pressure on the Speaches box, document it; local alternatives on the 3090: `Qwen3-30B-A3B-Instruct` (MoE, fast) or `gpt-oss-20b` via Ollama/llama.cpp.
 5. Prune the 18 manifest backups; add rotation (keep last N).
 
-## Phase 5 — Audio trimmer & UI polish (parallel, low risk)
+## Phase 5 — Audio trimmer & UI polish (parallel, low risk) — ✅ done 2026-08-04 (commit f84a456)
+
+> Trimmer: native region min/maxLength (drag-time enforcement, left-handle bug fixed), AudioContext closed in finally, extracting state on "Use Selection", >150MB extraction guard with >50MB warning, sub-1s clips submittable. Accessibility: dialogs (role/aria-modal/Escape/focus), keyboard-operable file dropzone, WAI-ARIA tabs with arrow-key navigation. Fixed the stale-samples race in SpeakersTab. Still open from the original list (deliberately deferred): exposing min/max_speakers/language/similarity_threshold as form controls, and a diarize-only quick-check tab.
 
 Before committing `audio-trimmer.tsx`:
 1. Use wavesurfer regions' native `maxLength: 30` instead of the manual clamp — fixes the right-edge-jumps-back bug when dragging the left handle, and enforces during drag rather than on mouse-up.
