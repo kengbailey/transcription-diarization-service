@@ -100,7 +100,9 @@ From the web-verified research (all claims checked against PyPI/GitHub/HF primar
 >
 > **Open finding from the A/B:** the same CUDA 12 image diarizes the 16-min file in **14–20s** in a minimal `docker run` container but **85–105s** as the compose `api` service — same code, same model, same GPU. Something in the compose deployment costs ~5×. Worth investigating; a large diarization speedup may be available for free.
 
-## Phase 4 — Rationalize `pipeline/` (after Phase 2)
+## Phase 4 — Rationalize `pipeline/` (after Phase 2) — core done 2026-08-04 (commit 8381a62)
+
+> `pipeline/pipeline_api.py` replaces the Speaches-based pipeline: env-configured, submits to the api's job queue, writes meeting_server.py-compatible output (verified). The >15MB skip regression is gone — 51 of 58 untranscribed meetings were blocked by it; one was processed as proof (3.7 min, 2/2 speakers named). **Remaining:** run the backlog of 58 meetings (est. ~6–10 h of queue time, resumable — just rerun the script); stand up a local LLM (Ollama + gpt-oss-20b or Qwen3-30B-A3B fits alongside the stack) and set `LLM_API_URL` for summaries; superseded scripts (`pipeline_speaches.py`, `process_meetings.py`, `transcribe_and_summarize.py`, `cluster_speakers.py`, `server.py`, `migrate_speakers.py`) stay frozen in-tree.
 
 `pipeline_speaches.py` is the active batch pipeline; `meeting_server.py` is the daily-use product. Superseded once-only tools (`process_meetings.py`, `cluster_speakers.py`, `server.py`, `migrate_speakers.py`) stay in-tree but frozen.
 
