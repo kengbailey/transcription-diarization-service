@@ -64,7 +64,16 @@ export function FileUpload({ accept = "audio/*", onChange, value, disabled, clas
 
   return (
     <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={value ? `Selected file: ${value.name}` : "Choose an audio file"}
       onClick={handleClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          handleClick()
+        }
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -73,6 +82,7 @@ export function FileUpload({ accept = "audio/*", onChange, value, disabled, clas
         isDragging
           ? "border-primary bg-primary/5"
           : "border-border hover:border-muted-foreground/50",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
         disabled && "opacity-50 cursor-not-allowed",
         className
       )}

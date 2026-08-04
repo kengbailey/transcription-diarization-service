@@ -29,6 +29,22 @@ const TabsList = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
+    role="tablist"
+    onKeyDown={(e) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return
+      const tabs = Array.from(
+        e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]:not(:disabled)')
+      )
+      const index = tabs.indexOf(document.activeElement as HTMLButtonElement)
+      if (index === -1) return
+      e.preventDefault()
+      const next =
+        e.key === "ArrowRight"
+          ? (index + 1) % tabs.length
+          : (index - 1 + tabs.length) % tabs.length
+      tabs[next].focus()
+      tabs[next].click()
+    }}
     className={cn(
       "inline-flex h-12 items-center gap-1 rounded-lg bg-muted p-1",
       className
@@ -52,6 +68,9 @@ const TabsTrigger = React.forwardRef<HTMLButtonElement, TabsTriggerProps>(
     return (
       <button
         ref={ref}
+        role="tab"
+        aria-selected={isActive}
+        tabIndex={isActive ? 0 : -1}
         className={cn(
           "inline-flex items-center justify-center whitespace-nowrap rounded-md px-4 py-2 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
           isActive
@@ -81,6 +100,7 @@ const TabsContent = React.forwardRef<HTMLDivElement, TabsContentProps>(
     return (
       <div
         ref={ref}
+        role="tabpanel"
         className={cn("mt-4 ring-offset-background focus-visible:outline-none", className)}
         {...props}
       />

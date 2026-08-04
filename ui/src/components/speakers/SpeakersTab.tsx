@@ -159,19 +159,31 @@ export function SpeakersTab() {
     }
   }
 
+  // Guards against a slow response for speaker A landing after the user
+  // already opened speaker B's dialog
+  const samplesRequestRef = React.useRef<string | null>(null)
+
   const openSamplesDialog = async (speaker: Speaker) => {
     setSpeakerForSamples(speaker)
     setSamplesDialogOpen(true)
     setSamplesLoading(true)
+    setSamples([])
+    samplesRequestRef.current = speaker.speaker_id
 
     try {
       const response = await getSpeakerSamples(speaker.speaker_id)
-      setSamples(response.samples)
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setSamples(response.samples)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load samples")
-      setSamplesDialogOpen(false)
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setError(err instanceof Error ? err.message : "Failed to load samples")
+        setSamplesDialogOpen(false)
+      }
     } finally {
-      setSamplesLoading(false)
+      if (samplesRequestRef.current === speaker.speaker_id) {
+        setSamplesLoading(false)
+      }
     }
   }
 

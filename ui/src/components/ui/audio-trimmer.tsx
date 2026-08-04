@@ -6,6 +6,11 @@ import { Button } from "./button"
 import { cn } from "@/lib/utils"
 
 const MAX_DURATION = 30 // Maximum duration in seconds
+const MIN_DURATION = 1 // Minimum useful selection in seconds
+// Extraction decodes the entire source file to raw PCM in memory; block
+// files large enough to hang or crash the tab.
+const MAX_EXTRACT_BYTES = 150 * 1024 * 1024
+const LARGE_FILE_WARNING_BYTES = 50 * 1024 * 1024
 
 interface AudioTrimmerProps {
   file: File
@@ -24,6 +29,7 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
   const [regionEnd, setRegionEnd] = React.useState(0)
   const [currentTime, setCurrentTime] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
+  const [isExtracting, setIsExtracting] = React.useState(false)
 
   const selectedDuration = regionEnd - regionStart
 
@@ -65,6 +71,11 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
         color: "rgba(59, 130, 246, 0.3)",
         drag: true,
         resize: true,
+        // Native limits enforce during the drag itself and handle either
+        // edge correctly (a manual clamp on region-updated only fires on
+        // mouse-up and yanks the wrong edge when resizing from the left)
+        minLength: Math.min(MIN_DURATION, audioDuration),
+        maxLength: MAX_DURATION,
       })
     })
 
@@ -81,19 +92,10 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
       setError("Failed to load audio file")
     })
 
-    // Handle region updates
+    // Keep state in sync with the region (limits are enforced natively)
     regions.on("region-updated", (region) => {
-      let start = region.start
-      let end = region.end
-
-      // Enforce max duration
-      if (end - start > MAX_DURATION) {
-        end = start + MAX_DURATION
-        region.setOptions({ end })
-      }
-
-      setRegionStart(start)
-      setRegionEnd(end)
+      setRegionStart(region.start)
+      setRegionEnd(region.end)
     })
 
     // Load the file
@@ -135,16 +137,28 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
       color: "rgba(59, 130, 246, 0.3)",
       drag: true,
       resize: true,
+      minLength: Math.min(MIN_DURATION, duration),
+      maxLength: MAX_DURATION,
     })
   }
 
   const handleExtractAndSave = async () => {
-    if (!file) return
+    if (!file || isExtracting) return
 
+    if (file.size > MAX_EXTRACT_BYTES) {
+      setError(
+        `File is too large to trim in the browser (${Math.round(file.size / 1024 / 1024)} MB). ` +
+        "Please use a shorter source recording."
+      )
+      return
+    }
+
+    setIsExtracting(true)
+    let audioContext: AudioContext | null = null
     try {
       // Read the file as ArrayBuffer
       const arrayBuffer = await file.arrayBuffer()
-      const audioContext = new AudioContext()
+      audioContext = new AudioContext()
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
 
       // Calculate sample positions
@@ -180,14 +194,18 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
       )
 
       onTrimmedAudio(trimmedFile)
-      await audioContext.close()
     } catch (err) {
       console.error("Failed to extract audio:", err)
       setError("Failed to extract audio segment")
+    } finally {
+      // Browsers cap concurrent AudioContexts; leaking one per failed
+      // attempt eventually breaks the feature for the whole page session
+      await audioContext?.close().catch(() => undefined)
+      setIsExtracting(false)
     }
   }
 
-  const formatTime = (seconds: number) => {
+  const formatTimePrecise = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
     const secs = Math.floor(seconds % 60)
     const ms = Math.floor((seconds % 1) * 10)
@@ -219,12 +237,12 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
       {isReady && (
         <>
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Selection: {formatTime(regionStart)} - {formatTime(regionEnd)}</span>
+            <span>Selection: {formatTimePrecise(regionStart)} - {formatTimePrecise(regionEnd)}</span>
             <span className={cn(
               "font-medium",
               selectedDuration > MAX_DURATION ? "text-destructive" : "text-primary"
             )}>
-              Duration: {formatTime(selectedDuration)} / {MAX_DURATION}s max
+              Duration: {formatTimePrecise(selectedDuration)} / {MAX_DURATION}s max
             </span>
           </div>
 
@@ -259,16 +277,27 @@ export function AudioTrimmer({ file, onTrimmedAudio, className }: AudioTrimmerPr
               type="button"
               size="sm"
               onClick={handleExtractAndSave}
-              disabled={selectedDuration > MAX_DURATION || selectedDuration < 1}
+              disabled={
+                isExtracting ||
+                selectedDuration > MAX_DURATION ||
+                selectedDuration <= 0 ||
+                // require >=1s unless the whole source is shorter than that
+                (duration >= MIN_DURATION && selectedDuration < MIN_DURATION)
+              }
             >
               <Scissors className="w-4 h-4 mr-1" />
-              Use Selection
+              {isExtracting ? "Extracting..." : "Use Selection"}
             </Button>
           </div>
 
           {duration > MAX_DURATION && (
             <p className="text-xs text-amber-600">
               Audio is longer than {MAX_DURATION}s. Drag the highlighted region to select which part to use.
+            </p>
+          )}
+          {file.size > LARGE_FILE_WARNING_BYTES && (
+            <p className="text-xs text-amber-600">
+              Large file ({Math.round(file.size / 1024 / 1024)} MB) — extraction may take a while.
             </p>
           )}
         </>
