@@ -94,6 +94,12 @@ From the web-verified research (all claims checked against PyPI/GitHub/HF primar
 
 **On Speaches:** it does have pyannote-4.x diarization + known-speaker matching built in (undocumented in its README), which duplicates our Qdrant speaker-ID layer — but it does *not* fuse ASR+diarization, doesn't use `exclusive_speaker_diarization`, and hasn't cut a stable release in ~8 months. Keep it as an ASR endpoint for now; keep speaker identity ownership in `api/`.
 
+## CUDA 13 migration — attempted 2026-08-04, reverted
+
+> Host-side there is no blocker: driver 580.x already advertises CUDA 13.0, and the stability fix is a 300W power cap (`nvidia-power-limit.service`) independent of container CUDA versions. The container migration (base `13.0.1-cudnn-runtime`, torch 2.11.0+cu130, torchcodec 0.15, onnxruntime-gpu 1.28) was functionally perfect — bit-identical diarization/identification output — but **~6× slower at diarization** (alternating A/B on the same file: CUDA 12 image 14–20s vs CUDA 13 image 105–120s). Ruled out: missing sm_86 kernels (present), cuDNN (micro-benchmarks identical), audio decode (equal). Root cause somewhere in pyannote's pipeline execution on torch 2.11+cu130; not worth chasing now. Reverted to torch 2.8.0+cu128 / onnxruntime-gpu 1.22. Revisit when pyannote or torch move on, and re-benchmark first.
+>
+> **Open finding from the A/B:** the same CUDA 12 image diarizes the 16-min file in **14–20s** in a minimal `docker run` container but **85–105s** as the compose `api` service — same code, same model, same GPU. Something in the compose deployment costs ~5×. Worth investigating; a large diarization speedup may be available for free.
+
 ## Phase 4 — Rationalize `pipeline/` (after Phase 2)
 
 `pipeline_speaches.py` is the active batch pipeline; `meeting_server.py` is the daily-use product. Superseded once-only tools (`process_meetings.py`, `cluster_speakers.py`, `server.py`, `migrate_speakers.py`) stay in-tree but frozen.
