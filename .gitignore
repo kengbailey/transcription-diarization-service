@@ -34,9 +34,6 @@ data/qdrant/
 data/uploads/
 *.mp3
 
-# Pipeline generated data (manifests, clips, transcripts, summaries)
-pipeline/output/
-
 # IDE
 .vscode/
 .idea/
