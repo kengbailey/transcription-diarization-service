@@ -368,6 +368,8 @@ def main():
     parser.add_argument("--force", action="store_true", help="Reprocess meetings already in the manifest")
     parser.add_argument("--since", type=str, metavar="YYYY-MM-DD",
                         help="Only meetings whose recording file date is on/after this day")
+    parser.add_argument("--until", type=str, metavar="YYYY-MM-DD",
+                        help="Only meetings whose recording file date is on/before this day")
     parser.add_argument("--summarize", action="store_true",
                         help="Also produce LLM summaries (requires LLM_API_URL)")
     args = parser.parse_args()
@@ -397,6 +399,11 @@ def main():
         cutoff = datetime.strptime(args.since, "%Y-%m-%d").timestamp()
         audio_files = [f for f in audio_files if os.path.getmtime(f) >= cutoff]
         logger.info(f"After --since {args.since}: {len(audio_files)} files")
+
+    if args.until:
+        end = datetime.strptime(args.until, "%Y-%m-%d").timestamp() + 86400  # inclusive day
+        audio_files = [f for f in audio_files if os.path.getmtime(f) < end]
+        logger.info(f"After --until {args.until}: {len(audio_files)} files")
 
     if args.meeting:
         audio_files = [f for f in audio_files if args.meeting in f.name]
@@ -450,9 +457,15 @@ def main():
             entry = manifest["meetings"].get(fhash, {})
             if not entry.get("transcript_file"):
                 continue
-            # Keep existing summaries unless this run re-transcribed the
-            # meeting — a fresh transcript deserves a fresh summary
-            if entry.get("summary_file") and fhash not in retranscribed:
+            # Keep an existing summary only if it's newer than the transcript —
+            # a fresh transcript deserves a fresh summary. Timestamp-based so it
+            # also heals meetings from interrupted --force runs.
+            fresh_summary = (
+                entry.get("summary_file")
+                and fhash not in retranscribed
+                and (entry.get("summarized_at") or "") >= (entry.get("transcribed_at") or "")
+            )
+            if fresh_summary:
                 continue
             try:
                 ok = summarize_meeting(manifest, fhash)
